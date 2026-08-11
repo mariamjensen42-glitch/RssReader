@@ -129,6 +129,7 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_feed_after_refresh(&self, id: i64, title: &str, link: &str, description: &str, icon_url: &str, last_updated: &str, etag: &str, last_modified: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
@@ -211,7 +212,7 @@ impl Database {
                 feed_title: row.get(13)?,
             })
         }).map_err(|e| e.to_string())?;
-        Ok(rows.next().transpose().map_err(|e| e.to_string())?)
+        rows.next().transpose().map_err(|e| e.to_string())
     }
 
     pub fn mark_read(&self, id: i64, read: bool) -> Result<(), String> {

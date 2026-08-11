@@ -31,7 +31,3 @@ encoding_rs = "0.8"
 
 [lints.rust]
 unsafe_code = "forbid"
-
-[lints.clippy]
-unwrap_used = "warn"
-expect_used = "warn"

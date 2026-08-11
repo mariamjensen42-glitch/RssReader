@@ -177,7 +177,7 @@ fn refresh_feed_internal(db: &Database, id: i64, url: &str, etag: &str, last_mod
     let body_str = if !content_type.is_empty() {
         if let Some(charset) = content_type.split(';').find_map(|p| {
             let p = p.trim().to_lowercase();
-            if p.starts_with("charset=") { Some(p[8..].trim().trim_matches('"').to_string()) } else { None }
+            p.strip_prefix("charset=").map(|s| s.trim().trim_matches('"').to_string())
         }) {
             if let Some(enc) = encoding_rs::Encoding::for_label(charset.as_bytes()) {
                 enc.decode(&body_bytes).0.into_owned()
@@ -351,10 +351,8 @@ fn import_opml(state: tauri::State<AppState>, content: String) -> Result<String,
     let feeds = flatten_outlines(&opml.body.outlines, "");
     let mut added = 0u32;
     for (name, url, group) in &feeds {
-        match state.db.add_feed(name, url, group) {
-            Ok(_) => added += 1,
-            Err(_) => {} // Duplicate, skip
-        }
+        if state.db.add_feed(name, url, group).is_ok() { added += 1; }
+        // skip duplicates silently
     }
     Ok(format!("Imported {} feeds ({} skipped as duplicates)", added, feeds.len() - added as usize))
 }
@@ -491,7 +489,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            app.manage(AppState { settings: Mutex::new(SettingsStore::new()), db: Database::new().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))? });
+            app.manage(AppState { settings: Mutex::new(SettingsStore::new()), db: Database::new().map_err(std::io::Error::other)? });
 
             // Show main window after WebView has time to load its content
             let main = app.get_webview_window("main").unwrap();
@@ -583,10 +581,8 @@ async fn tag_article(
     // Auto-save tags and return TagRow objects
     let mut tag_rows = Vec::new();
     for tag_name in &tags {
-        match state.db.add_tag(article_id, tag_name) {
-            Ok(row) => tag_rows.push(row),
-            Err(_) => {} // skip duplicates
-        }
+        if let Ok(row) = state.db.add_tag(article_id, tag_name) { tag_rows.push(row); }
+        // skip duplicates silently
     }
 
     Ok(tag_rows)

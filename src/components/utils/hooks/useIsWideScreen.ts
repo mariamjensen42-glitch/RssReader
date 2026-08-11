@@ -1,0 +1,19 @@
+import { useState, useEffect } from "react"
+
+const getWindowBreakpoint = () => window.innerWidth >= 1440
+
+export const useIsWideScreen = () => {
+    const [isWide, setIsWide] = useState(getWindowBreakpoint)
+
+    useEffect(() => {
+        let timer: ReturnType<typeof setTimeout>
+        const handler = () => {
+            clearTimeout(timer)
+            timer = setTimeout(() => { setIsWide(getWindowBreakpoint()) }, 100)
+        }
+        window.addEventListener("resize", handler)
+        return () => window.removeEventListener("resize", handler)
+    }, [])
+
+    return isWide
+}

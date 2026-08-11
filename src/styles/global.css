@@ -1,0 +1,149 @@
+:root {
+    --black: #1b1b19;
+    --neutralSecondaryAlt: #a19f9d;
+    --neutralSecondary: #797775;
+    --neutralDarker: #b3b0ad;
+    --neutralQuaternaryAlt: #e1dfdd;
+    --whiteConstant: #fff;
+    --white: #fff;
+    --neutralLight: #edebe9;
+    --neutralLighterAlt: #faf9f8;
+    --neutralLighterAltOpacity: rgba(250, 249, 248, 0.85);
+    --navHeight: 48px;
+    --blur: blur(30px) saturate(125%);
+    --transition-timing: cubic-bezier(0.1, 0.9, 0.2, 1);
+    --colorNeutralForeground3: #a19f9d;
+    --neutralLayer1: #ffffff;
+    --neutralLayer2: #faf9f8;
+    --neutralLayer3: #f3f2f1;
+    --neutralLayer1Hover: #f5f5f5;
+    --articleBodySize: 16px;
+    --articleTitleSize: 24px;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --black: #ffffff;
+        --neutralSecondaryAlt: #a19f9d;
+        --neutralSecondary: #8a8886;
+        --neutralDarker: #e0e0e0;
+        --neutralQuaternaryAlt: #3d3d3d;
+        --white: #1f1f1f;
+        --neutralLight: #2d2d2d;
+        --neutralLighterAlt: #1a1a1a;
+        --neutralLighterAltOpacity: rgba(30, 30, 30, 0.85);
+        --colorNeutralForeground3: #a19f9d;
+        --neutralLayer1: #1f1f1f;
+        --neutralLayer2: #181818;
+        --neutralLayer3: #2d2d2d;
+        --neutralLayer1Hover: #2a2a2a;
+    }
+}
+
+html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    font-family: "Segoe UI", sans-serif;
+    user-select: none;
+    background-color: transparent;
+    color: var(--black);
+    border-radius: 8px;
+}
+
+/* Windows-specific border */
+body.win32 {
+    border: 1px solid var(--neutralQuaternaryAlt);
+}
+
+#root {
+    height: 100%;
+}
+
+/* ─── Nav bar with glass morphism ─── */
+nav {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--navHeight);
+    z-index: 6;
+    display: flex;
+    align-items: center;
+    color: var(--black);
+    background-color: var(--neutralLighterAltOpacity);
+    backdrop-filter: var(--blur);
+    -webkit-app-region: drag;
+    user-select: none;
+}
+
+/* Buttons inside nav should NOT be draggable */
+nav button, nav .no-drag {
+    -webkit-app-region: no-drag;
+}
+
+/* macOS traffic light space */
+body.darwin nav {
+    padding-left: 72px;
+}
+
+body.darwin nav .title {
+    max-width: 600px;
+}
+
+nav span.title {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 13px;
+    line-height: var(--navHeight);
+    white-space: nowrap;
+    max-width: 400px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ─── Center content area ─── */
+.main {
+    margin-top: calc(-1 * var(--navHeight));
+    height: 100%;
+    overflow: hidden;
+    background-color: transparent;
+}
+
+.main::before {
+    content: "";
+    display: block;
+    position: relative;
+    top: var(--navHeight);
+    left: 0;
+    width: calc(100% - 16px);
+    height: var(--navHeight);
+    margin-bottom: calc(-1 * var(--navHeight));
+    background: linear-gradient(var(--neutralLighterAlt), transparent);
+    z-index: 1;
+    pointer-events: none;
+    opacity: 0.6;
+}
+
+/* ─── Custom scrollbar ─── */
+::-webkit-scrollbar {
+    width: 3px;
+    height: 3px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--neutralQuaternaryAlt);
+    border-radius: 2px;
+    opacity: 0.3;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--neutralSecondaryAlt);
+    opacity: 1;
+}

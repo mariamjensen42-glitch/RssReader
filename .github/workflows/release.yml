@@ -23,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── 前端环境 ──────────────────────────────────────────
       - uses: pnpm/action-setup@v4
         with:
           version: latest
@@ -32,30 +33,40 @@ jobs:
           node-version: '22'
           cache: 'pnpm'
 
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            node_modules
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
       - run: pnpm install --no-frozen-lockfile
 
+      # ── 预编译前端 (Tauri 需要 dist/) ────────────────────
       - name: 编译前端 (TypeScript + Vite)
         run: pnpm build
 
+      # ── Rust 环境 ─────────────────────────────────────────
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: 'src-tauri -> target'
+          cache-on-failure: true
 
+      # ── Linux 系统依赖 ────────────────────────────────────
       - name: 安装 Tauri 2 系统依赖 (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libgtk-3-dev \
-            libsoup-3.0-dev \
-            libjavascriptcoregtk-4.1-dev
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: >
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
+            patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+          version: '1.0'
 
+      # ── Tauri 构建 & 发布 ─────────────────────────────────
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

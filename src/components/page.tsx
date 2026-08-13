@@ -1,6 +1,7 @@
 import * as React from "react"
 import { useEffect } from "react"
 import { useAppStore } from "../store"
+import { useI18n } from "../i18n"
 import { ViewType } from "../schema-types"
 import ArticleDetail from "./ArticleDetail"
 import TagPage from "./TagPage"
@@ -154,25 +155,59 @@ const S = {
     searchBar: {
         margin: "16px auto", maxWidth: "720px", display: "flex", gap: "8px", padding: "0 20px",
     } as React.CSSProperties,
+    // Date grouping
+    groupHeader: {
+        margin: "24px auto 4px", padding: "0 20px",
+        fontSize: "12px", fontWeight: 600, letterSpacing: "0.4px",
+        color: tokens.colorNeutralForeground4, textTransform: "uppercase" as const,
+        userSelect: "none" as const,
+    } as React.CSSProperties,
 }
 
 // ─── Helpers ───
 
-const formatDate = (dateStr: string): string => {
+const formatDate = (dateStr: string, t: (key: string, params?: Record<string, string | number>) => string): string => {
     if (!dateStr) return ""
     try {
         const d = new Date(dateStr)
         const now = new Date()
         const diff = now.getTime() - d.getTime()
-        if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`
-        if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`
-        if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`
+        if (diff < 3600000) return t("page.minAgo", { n: Math.floor(diff / 60000) })
+        if (diff < 86400000) return t("page.hoursAgo", { n: Math.floor(diff / 3600000) })
+        if (diff < 604800000) return t("page.daysAgo", { n: Math.floor(diff / 86400000) })
         return d.toLocaleDateString()
     } catch { return dateStr }
 }
 
 const stripHtml = (html: string): string =>
     html ? html.replace(/<[^>]*>/g, "").replace(/&[^;]+;/g, " ").trim() : ""
+
+// ─── Date grouping (Today / Yesterday / This Week / Earlier) ───
+
+const groupKey = (dateStr: string): string => {
+    if (!dateStr) return "Earlier"
+    const d = new Date(dateStr)
+    if (isNaN(d.getTime())) return "Earlier"
+    const now = new Date()
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+    const startDay = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+    const diffDays = Math.round((startToday - startDay) / 86400000)
+    if (diffDays <= 0) return "Today"
+    if (diffDays === 1) return "Yesterday"
+    if (diffDays < 7) return "This Week"
+    return "Earlier"
+}
+
+const groupArticles = (articles: ArticleRow[]): Array<[string, ArticleRow[]]> => {
+    const order = ["Today", "Yesterday", "This Week", "Earlier"]
+    const groups = new Map<string, ArticleRow[]>()
+    for (const a of articles) {
+        const k = groupKey(a.pub_date)
+        if (!groups.has(k)) groups.set(k, [])
+        groups.get(k)!.push(a)
+    }
+    return order.filter(k => groups.has(k)).map(k => [k, groups.get(k)!])
+}
 
 const getCoverImage = (article: ArticleRow): string => {
     if (article.image_url) return article.image_url
@@ -188,6 +223,7 @@ const ArticleCard: React.FC<{
 }> = ({ article, viewType, onSelect, onStar, tags }) => {
     const isRead = article.is_read === 1
     const [hover, setHover] = React.useState(false)
+    const { t } = useI18n()
     const cover = getCoverImage(article)
     const tagsEl = tags.length > 0 ? (
         <div style={S.tagsRow}>{tags.map(t => <span key={t.id} style={S.tagBadge}>{t.name}</span>)}</div>
@@ -205,7 +241,7 @@ const ArticleCard: React.FC<{
                     : <div style={S.listThumb} />}
                 <div style={S.listContent}>
                     <div style={S.listTitle}>{article.title}</div>
-                    <div style={S.listMeta}>{article.feed_title} &middot; {formatDate(article.pub_date)}</div>
+                    <div style={S.listMeta}>{article.feed_title} &middot; {formatDate(article.pub_date, t)}</div>
                     {tagsEl}
                 </div>
                 <button style={S.starBtn} onClick={onStar} tabIndex={-1}>
@@ -229,7 +265,7 @@ const ArticleCard: React.FC<{
                     <div style={{ ...S.gridTitle, ...(isRead ? S.read : {}) }}>{article.title}</div>
                     <div style={S.gridMeta}>
                         <span>{article.feed_title}</span>
-                        <span>{formatDate(article.pub_date)}</span>
+                        <span>{formatDate(article.pub_date, t)}</span>
                         <button style={S.starBtn} onClick={onStar} tabIndex={-1}>
                             {article.is_starred ? <Star20Filled /> : <Star20Regular />}
                         </button>
@@ -256,7 +292,7 @@ const ArticleCard: React.FC<{
                 <div style={S.cardMeta}>
                     <span style={S.feedBadge}>{article.feed_title}</span>
                     {article.author && <span>{article.author}</span>}
-                    <span>{formatDate(article.pub_date)}</span>
+                    <span>{formatDate(article.pub_date, t)}</span>
                     <button style={S.starBtn} onClick={onStar} tabIndex={-1}>
                         {article.is_starred ? <Star20Filled /> : <Star20Regular />}
                     </button>
@@ -284,13 +320,25 @@ const Page: React.FC = () => {
     const toggleSearch = useAppStore(st => st.toggleSearch)
     const onlyUnread = useAppStore(st => st.onlyUnread)
     const articleTags = useAppStore(st => st.articleTags)
+    const currentArticle = useAppStore(st => st.currentArticle)
     const showTagsPage = useAppStore(st => st.showTagsPage)
     const closeTagsPage = useAppStore(st => st.closeTagsPage)
     const tagId = useAppStore(st => st.tagId)
+    const loadMoreArticles = useAppStore(st => st.loadMoreArticles)
+    const loadingMore = useAppStore(st => st.loadingMore)
+    const hasMoreArticles = useAppStore(st => st.hasMoreArticles)
     const [loading, setLoading] = React.useState(true)
     const [query, setQuery] = React.useState("")
+    const { t } = useI18n()
     const mainRef = React.useRef<HTMLDivElement>(null)
     const scrollPositions = React.useRef<Record<number, number>>({})
+
+    const handleScrollMore = (e: React.UIEvent<HTMLDivElement>) => {
+        const el = e.currentTarget
+        if (el.scrollHeight - el.scrollTop - el.clientHeight < 300) {
+            loadMoreArticles()
+        }
+    }
 
     // Apply saved font size on mount
     useEffect(() => {
@@ -330,7 +378,10 @@ const Page: React.FC = () => {
 
             const key = e.key.toLowerCase()
             if (key === "j" || key === "k") {
-                const idx = st.articles.findIndex(a => a.id === st.itemId)
+                // The opened article may already have been filtered out of the unread
+                // list (auto-marked read); fall back to its index before opening.
+                let idx = st.articles.findIndex(a => a.id === st.itemId)
+                if (idx === -1) idx = st.prevIndex
                 let next = -1
                 if (idx === -1) next = key === "j" ? 0 : st.articles.length - 1
                 else next = key === "j" ? Math.min(idx + 1, st.articles.length - 1) : Math.max(idx - 1, 0)
@@ -338,7 +389,7 @@ const Page: React.FC = () => {
                 if (target) st.selectArticle(target.id)
                 e.preventDefault()
             } else if (key === "m" && st.itemId) {
-                const a = st.articles.find(x => x.id === st.itemId)
+                const a = st.articles.find(x => x.id === st.itemId) ?? st.currentArticle
                 if (a) st.markRead(a.id, a.is_read !== 1)
             } else if (key === "s" && st.itemId) {
                 st.toggleStar(st.itemId)
@@ -357,6 +408,9 @@ const Page: React.FC = () => {
         selectArticle(id)
     }
 
+    const groupLabel = (g: string) =>
+        g === "Today" ? t("page.today") : g === "Yesterday" ? t("page.yesterday") : g === "This Week" ? t("page.thisWeek") : t("page.earlier")
+
     // Tags page
     if (showTagsPage) {
         return (
@@ -368,10 +422,10 @@ const Page: React.FC = () => {
 
     // Three-column layout
     if (viewType === ViewType.Compact && !searchOn) {
-        const activeArticle = itemId ? articles.find(a => a.id === itemId) : null
+        const activeArticle = itemId ? (articles.find(a => a.id === itemId) ?? currentArticle) : null
         return (
             <div style={{ ...S.main, ...(menuOn ? S.mainMenuOn : {}), ...S.threeCol }}>
-                <div style={S.threeList}>
+                <div style={S.threeList} onScroll={handleScrollMore}>
                     {articles.map(a => (
                         <div key={a.id}
                             style={{ ...S.threeItem, ...(a.id === itemId ? S.threeItemActive : {}), ...(a.is_read ? S.read : {}) }}
@@ -379,15 +433,19 @@ const Page: React.FC = () => {
                             <div style={S.threeTitle}>{a.title}</div>
                             <div style={S.threeMeta}>
                                 <span>{a.feed_title}</span>
-                                <span>{formatDate(a.pub_date)}</span>
+                                <span>{formatDate(a.pub_date, t)}</span>
                             </div>
                         </div>
                     ))}
+                    {loadingMore && <div style={{ textAlign: "center", padding: "12px" }}><Spinner size="small" /></div>}
+                    {!hasMoreArticles && articles.length > 0 && (
+                        <div style={{ textAlign: "center", padding: "10px", fontSize: "11px", color: tokens.colorNeutralForeground4 }}>{t("page.endOfList")}</div>
+                    )}
                 </div>
                 <div style={S.threeDetail}>
                     {activeArticle ? <ArticleDetail article={activeArticle} /> : (
                         <div style={{ ...S.empty, marginTop: 0 }}>
-                            <div style={S.emptyHint}>Select an article to read</div>
+                            <div style={S.emptyHint}>{t("page.selectArticle")}</div>
                         </div>
                     )}
                 </div>
@@ -397,7 +455,7 @@ const Page: React.FC = () => {
 
     // Article detail (full page, non-three-column)
     if (itemId !== null) {
-        const article = articles.find(a => a.id === itemId)
+        const article = articles.find(a => a.id === itemId) ?? currentArticle
         return <div ref={mainRef} style={{ ...S.main, ...(menuOn ? S.mainMenuOn : {}) }}>
             <ArticleDetail article={article} />
         </div>
@@ -407,17 +465,17 @@ const Page: React.FC = () => {
     const hasArticles = articles.length > 0
 
     return (
-        <div ref={mainRef} style={{ ...S.main, ...(menuOn ? S.mainMenuOn : {}) }} data-scroll-container>
+        <div ref={mainRef} style={{ ...S.main, ...(menuOn ? S.mainMenuOn : {}) }} data-scroll-container onScroll={handleScrollMore}>
             {loading && <div style={S.empty}><Spinner size="medium" /></div>}
 
             {!loading && (
                 <>
                     {searchOn && (
                         <div style={S.searchBar}>
-                            <Input style={{ flex: 1 }} placeholder="Search articles..." value={query}
+                            <Input style={{ flex: 1 }} placeholder={t("page.searchPlaceholder")} value={query}
                                 onChange={(_, d) => setQuery(d.value)}
                                 onKeyDown={(e) => e.key === "Enter" && query.trim() && searchArticles(query.trim())} />
-                            <Button appearance="primary" onClick={() => query.trim() && searchArticles(query.trim())}>Search</Button>
+                            <Button appearance="primary" onClick={() => query.trim() && searchArticles(query.trim())}>{t("common.search")}</Button>
                             <Button appearance="subtle" icon={<DismissRegular />}
                                 onClick={() => { toggleSearch(); loadArticles(feedId, { onlyUnread }); setQuery("") }} />
                         </div>
@@ -426,7 +484,7 @@ const Page: React.FC = () => {
                     {!searchOn && hasFeeds && articles.length > 0 && (
                         <div style={{ margin: "12px auto", maxWidth: "720px", padding: "0 20px", display: "flex" }}>
                             <span style={{ fontSize: "12px", color: tokens.colorNeutralForeground4, marginLeft: "auto" }}>
-                                {articles.length} article{articles.length !== 1 ? "s" : ""}
+                                {t("page.articleCount", { count: articles.length })}
                             </span>
                         </div>
                     )}
@@ -437,36 +495,50 @@ const Page: React.FC = () => {
                                 <path d="M4 11a9 9 0 019 9M4 4a16 16 0 0116 16" strokeLinecap="round" />
                                 <circle cx="5" cy="19" r="1.5" fill={tokens.colorNeutralForeground4} />
                             </svg>
-                            <div style={S.emptyTitle}>Welcome to RSS Reader</div>
-                            <div style={S.emptyHint}>Open Settings to add your first feed</div>
+                            <div style={S.emptyTitle}>{t("page.welcome")}</div>
+                            <div style={S.emptyHint}>{t("page.openSettings")}</div>
                         </div>
                     )}
 
                     {hasFeeds && !hasArticles && !searchOn && (
                         <div style={S.empty}>
-                            <div style={S.emptyTitle}>No articles yet</div>
-                            <div style={S.emptyHint}>Click the refresh button to fetch latest articles</div>
+                            <div style={S.emptyTitle}>{t("page.noArticles")}</div>
+                            <div style={S.emptyHint}>{t("page.clickRefresh")}</div>
                         </div>
                     )}
 
                     {hasArticles && (
-                        (viewType === ViewType.Magazine)
-                            ? <div style={S.gridContainer}>
-                                {articles.map(a => (
-                                    <ArticleCard key={a.id} article={a} viewType={viewType}
-                                        tags={articleTags[a.id] ?? []}
-                                        onSelect={() => handleArticleSelect(a.id)}
-                                        onStar={(e) => { e.stopPropagation(); toggleStar(a.id) }} />
-                                ))}
-                            </div>
-                            : <div style={S.listCard}>
-                                {articles.map(a => (
-                                    <ArticleCard key={a.id} article={a} viewType={viewType}
-                                        tags={articleTags[a.id] ?? []}
-                                        onSelect={() => handleArticleSelect(a.id)}
-                                        onStar={(e) => { e.stopPropagation(); toggleStar(a.id) }} />
-                                ))}
-                            </div>
+                        <div>
+                            {groupArticles(articles).map(([group, items]) => (
+                                <React.Fragment key={group}>
+                                    <div style={{ ...S.groupHeader, maxWidth: viewType === ViewType.Magazine ? "1080px" : "720px" }}>{groupLabel(group)}</div>
+                                    {viewType === ViewType.Magazine
+                                        ? <div style={S.gridContainer}>
+                                            {items.map(a => (
+                                                <ArticleCard key={a.id} article={a} viewType={viewType}
+                                                    tags={articleTags[a.id] ?? []}
+                                                    onSelect={() => handleArticleSelect(a.id)}
+                                                    onStar={(e) => { e.stopPropagation(); toggleStar(a.id) }} />
+                                            ))}
+                                        </div>
+                                        : <div style={S.listCard}>
+                                            {items.map(a => (
+                                                <ArticleCard key={a.id} article={a} viewType={viewType}
+                                                    tags={articleTags[a.id] ?? []}
+                                                    onSelect={() => handleArticleSelect(a.id)}
+                                                    onStar={(e) => { e.stopPropagation(); toggleStar(a.id) }} />
+                                            ))}
+                                        </div>}
+                                </React.Fragment>
+                            ))}
+                        </div>
+                    )}
+
+                    {loadingMore && !searchOn && (
+                        <div style={{ display: "flex", justifyContent: "center", padding: "16px" }}><Spinner size="small" /></div>
+                    )}
+                    {!hasMoreArticles && hasArticles && !searchOn && (
+                        <div style={{ textAlign: "center", padding: "14px", fontSize: "12px", color: tokens.colorNeutralForeground4 }}>{t("page.endOfList")}</div>
                     )}
                 </>
             )}

@@ -61,6 +61,8 @@ export const feedsBridge = {
     markRead: (id: number, read: boolean): Promise<void> => invoke("mark_read", { id, read }),
     markAllRead: (feedId?: number): Promise<void> => invoke("mark_all_read", { feedId: feedId ?? null }),
     toggleStar: (id: number): Promise<boolean> => invoke("toggle_star", { id }),
+    deleteArticle: (id: number): Promise<void> => invoke("delete_article", { id }),
+    clearReadArticles: (): Promise<number> => invoke("clear_read_articles"),
     searchArticles: (query: string, limit?: number): Promise<ArticleRow[]> => invoke("search_articles", { query, limit: limit ?? 50 }),
 
     // Tags
@@ -73,12 +75,13 @@ export const feedsBridge = {
         invoke("get_articles_by_tag", { tagId, limit: limit ?? 50, offset: offset ?? 0 }),
 
     // OPML
-    importOpml: (content: string): Promise<string> => invoke("import_opml", { content }),
+    importOpml: (content: string): Promise<[number, number]> => invoke("import_opml", { content }),
     exportOpml: (): Promise<string> => invoke("export_opml"),
 
     // Discovery & Export
     discoverFeeds: (websiteUrl: string): Promise<Array<{ url: string; title: string; type: string }>> => invoke("discover_feeds", { websiteUrl }),
     exportArticle: (id: number, format: string): Promise<string> => invoke("export_article", { id, format }),
+    writeArticleExport: (id: number, format: string): Promise<string> => invoke("export_article_dialog", { id, format }),
     fetchFullText: (articleId: number, url: string): Promise<string> => invoke("fetch_full_text", { articleId, url }),
 }
 

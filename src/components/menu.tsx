@@ -1,8 +1,10 @@
 import * as React from "react"
 import { useEffect } from "react"
 import { useAppStore } from "../store"
+import { useI18n } from "../i18n"
 import { tokens, Button, Input } from "@fluentui/react-components"
-import { DocumentOnePageMultiple16Regular, Star16Regular, DismissRegular, EditRegular, CheckmarkRegular, ArrowSyncRegular, TagRegular } from "@fluentui/react-icons"
+import { DocumentOnePageMultiple16Regular, Star16Regular, DismissRegular, EditRegular, CheckmarkRegular, ArrowSyncRegular, TagRegular, DeleteRegular } from "@fluentui/react-icons"
+import { ask } from "@tauri-apps/plugin-dialog"
 
 const S: Record<string, React.CSSProperties> = {
     sidebar: {
@@ -64,6 +66,7 @@ const SidebarItem: React.FC<{
     onClick: () => void; onContextMenu?: (e: React.MouseEvent) => void;
 }> = ({ label, active, icon, badge, count, indent, error, onClick, onContextMenu }) => {
     const [hover, setHover] = React.useState(false)
+    const { t } = useI18n()
     return (
         <div
             style={{
@@ -81,7 +84,7 @@ const SidebarItem: React.FC<{
             <span style={S.itemLabel}>{label}</span>
             {count && <span style={S.count}>{count}</span>}
             {error ? (
-                <span style={S.errorBadge} title={`${error} failed refresh${error > 1 ? "es" : ""}`}>!{error}</span>
+                <span style={S.errorBadge} title={t("menu.failedRefresh", { count: error })}>!{error}</span>
             ) : null}
             {badge}
         </div>
@@ -101,11 +104,13 @@ export const Menu: React.FC = () => {
     const removeFeed = useAppStore(s => s.removeFeed)
     const markAllRead = useAppStore(s => s.markAllRead)
     const refreshFeed = useAppStore(s => s.refreshFeed)
+    const clearReadArticles = useAppStore(s => s.clearReadArticles)
     const tags = useAppStore(s => s.tags)
     const showTagsPage = useAppStore(s => s.showTagsPage)
     const openTagsPage = useAppStore(s => s.openTagsPage)
     const closeTagsPage = useAppStore(s => s.closeTagsPage)
     const loadAllTags = useAppStore(s => s.loadAllTags)
+    const { t } = useI18n()
 
     const [ctxMenu, setCtxMenu] = React.useState<{ x: number; y: number; feed: typeof feeds[0] } | null>(null)
     const [editingFeed, setEditingFeed] = React.useState<number | null>(null)
@@ -138,6 +143,20 @@ export const Menu: React.FC = () => {
         setCtxMenu({ x: e.clientX, y: e.clientY, feed })
     }
 
+    const handleClearRead = async () => {
+        let ok = false
+        const msg = t("menu.clearReadConfirm")
+        try {
+            ok = await ask(msg, { title: t("menu.clearRead"), kind: "warning" })
+        } catch {
+            ok = window.confirm(msg)
+        }
+        if (!ok) return
+        try {
+            await clearReadArticles()
+        } catch (e) { console.error("clearRead:", e) }
+    }
+
     // Close context menu on any click
     useEffect(() => {
         const h = () => setCtxMenu(null)
@@ -151,28 +170,35 @@ export const Menu: React.FC = () => {
         <div style={S.sidebar}>
             <div style={S.scroll}>
                 <SidebarItem
-                    label="All Articles" active={feedId === null}
+                    label={t("menu.allArticles")} active={feedId === null}
                     icon={<DocumentOnePageMultiple16Regular />}
                     count={totalUnread > 0 ? totalUnread.toString() : undefined}
                     onClick={() => { selectAllArticles(); closeTagsPage() }}
                 />
                 <SidebarItem
-                    label="Starred"
+                    label={t("menu.starred")}
                     icon={<Star16Regular />}
-                    onClick={() => { loadArticles(null, { onlyStarred: true }); setTitle("Starred"); closeTagsPage() }}
+                    onClick={() => { useAppStore.setState({ starredView: true, tagId: null }); loadArticles(null, { onlyStarred: true }); setTitle(t("menu.starred")); closeTagsPage() }}
                 />
                 <SidebarItem
-                    label="Tags"
+                    label={t("menu.tags")}
                     active={showTagsPage}
                     icon={<TagRegular />}
                     count={tags.length > 0 ? tags.length.toString() : undefined}
                     onClick={openTagsPage}
                 />
 
-                <div style={S.sectionTitle}>Feeds</div>
+                <div style={{ ...S.item, ...{ color: "#d32f2f", marginTop: "12px" } }}
+                    onClick={handleClearRead}
+                    title={t("menu.clearReadTitle")}>
+                    <DeleteRegular fontSize={14} />
+                    <span style={S.itemLabel}>{t("menu.clearRead")}</span>
+                </div>
+
+                <div style={S.sectionTitle}>{t("menu.feeds")}</div>
 
                 {feeds.length === 0 && (
-                    <div style={S.empty}>No feeds yet. Add one in Settings.</div>
+                    <div style={S.empty}>{t("menu.noFeeds")}</div>
                 )}
 
                 {groupedFeeds.map(([group, groupFeeds]) => (
@@ -181,10 +207,10 @@ export const Menu: React.FC = () => {
                         {groupFeeds.map(feed => (
                             editingFeed === feed.id ? (
                                 <div key={feed.id} style={{ padding: "6px 12px", margin: "1px 6px" }}>
-                                    <Input size="small" placeholder="Title" value={editTitle}
+                                    <Input size="small" placeholder={t("menu.editTitle")} value={editTitle}
                                         style={{ marginBottom: 4 }}
                                         onChange={(_, d) => setEditTitle(d.value)} />
-                                    <Input size="small" placeholder="Group" value={editGroup}
+                                    <Input size="small" placeholder={t("menu.group")} value={editGroup}
                                         style={{ marginBottom: 4 }}
                                         onChange={(_, d) => setEditGroup(d.value)} />
                                     <div style={{ display: "flex", gap: 4 }}>
@@ -192,9 +218,9 @@ export const Menu: React.FC = () => {
                                             onClick={() => {
                                                 updateFeed(feed.id, editTitle || feed.title, editGroup || feed.group_name)
                                                 setEditingFeed(null)
-                                            }}>Save</Button>
+                                            }}>{t("common.save")}</Button>
                                         <Button size="small" appearance="subtle"
-                                            onClick={() => setEditingFeed(null)}>Cancel</Button>
+                                            onClick={() => setEditingFeed(null)}>{t("common.cancel")}</Button>
                                     </div>
                                 </div>
                             ) : (
@@ -224,16 +250,16 @@ export const Menu: React.FC = () => {
                         setEditGroup(ctxMenu.feed.group_name)
                         setCtxMenu(null)
                     }}>
-                        <EditRegular fontSize={14} /> Rename
+                        <EditRegular fontSize={14} /> {t("menu.rename")}
                     </div>
                     <div style={S.ctxItem} onClick={() => {
                         markAllRead(ctxMenu.feed.id)
                         setCtxMenu(null)
                     }}>
-                        <CheckmarkRegular fontSize={14} /> Mark All Read
+                        <CheckmarkRegular fontSize={14} /> {t("menu.markAllRead")}
                     </div>
                     <div style={S.ctxSep} />
-                    <div style={{ fontSize: "11px", color: tokens.colorNeutralForeground4, padding: "4px 12px 2px", fontWeight: 600, letterSpacing: "0.3px" }}>Move to Group</div>
+                    <div style={{ fontSize: "11px", color: tokens.colorNeutralForeground4, padding: "4px 12px 2px", fontWeight: 600, letterSpacing: "0.3px" }}>{t("menu.moveToGroup")}</div>
                     {(() => {
                         const groups = [...new Set(feeds.map(f => f.group_name).filter(Boolean))].sort()
                         return groups.map(g => (
@@ -250,7 +276,7 @@ export const Menu: React.FC = () => {
                             updateFeed(ctxMenu.feed.id, ctxMenu.feed.title, "")
                             setCtxMenu(null)
                         }}>
-                            <DismissRegular fontSize={12} style={{ opacity: 0.5 }} /> Ungrouped
+                            <DismissRegular fontSize={12} style={{ opacity: 0.5 }} /> {t("menu.ungrouped")}
                         </div>
                     )}
                     <div style={S.ctxSep} />
@@ -258,14 +284,14 @@ export const Menu: React.FC = () => {
                         refreshFeed(ctxMenu.feed.id)
                         setCtxMenu(null)
                     }}>
-                        <ArrowSyncRegular fontSize={14} /> Refresh
+                        <ArrowSyncRegular fontSize={14} /> {t("common.refresh")}
                     </div>
                     <div style={S.ctxSep} />
                     <div style={{ ...S.ctxItem, ...S.ctxItemDanger }} onClick={() => {
                         removeFeed(ctxMenu.feed.id)
                         setCtxMenu(null)
                     }}>
-                        <DismissRegular fontSize={14} /> Unsubscribe
+                        <DismissRegular fontSize={14} /> {t("menu.unsubscribe")}
                     </div>
                 </div>
             )}

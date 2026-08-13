@@ -1,7 +1,9 @@
 import * as React from "react"
 import { useAppStore } from "../store"
+import { useI18n } from "../i18n"
 import { tokens, Button, Input } from "@fluentui/react-components"
-import { Star20Regular, Star20Filled, OpenRegular, CheckmarkCircleRegular, ArrowDownloadRegular, DismissRegular, AddRegular, DocumentTextRegular } from "@fluentui/react-icons"
+import { Star20Regular, Star20Filled, OpenRegular, CheckmarkCircleRegular, ArrowDownloadRegular, DismissRegular, AddRegular, DocumentTextRegular, DeleteRegular } from "@fluentui/react-icons"
+import { ask } from "@tauri-apps/plugin-dialog"
 import type { ArticleRow } from "../bridges/feeds"
 import ArticleAI from "./ArticleAI"
 
@@ -41,12 +43,13 @@ interface Props { article: ArticleRow | null | undefined }
 const ArticleDetail: React.FC<Props> = ({ article }) => {
     const toggleStar = useAppStore(st => st.toggleStar)
     const markRead = useAppStore(st => st.markRead)
+    const deleteArticle = useAppStore(st => st.deleteArticle)
     const currentArticleTags = useAppStore(st => st.currentArticleTags)
     const loadArticleTags = useAppStore(st => st.loadArticleTags)
     const addTag = useAppStore(st => st.addTag)
     const removeTag = useAppStore(st => st.removeTag)
     const contentRef = React.useRef<HTMLDivElement>(null)
-    const hasMarkedRead = React.useRef(false)
+    const { t } = useI18n()
     const [tagInput, setTagInput] = React.useState("")
     const [showTagInput, setShowTagInput] = React.useState(false)
     const [fullText, setFullText] = React.useState<string | null>(null)
@@ -63,37 +66,27 @@ const ArticleDetail: React.FC<Props> = ({ article }) => {
         setExtractError("")
     }, [article?.id])
 
-    // Scroll-to-bottom → auto mark read
-    React.useEffect(() => {
-        if (!article) return
-        hasMarkedRead.current = false
-        const el = contentRef.current?.closest('[data-scroll-container]')
-        if (!el) return
-        const onScroll = () => {
-            if (hasMarkedRead.current || article.is_read === 1) return
-            const { scrollTop, scrollHeight, clientHeight } = el as HTMLElement
-            if (scrollTop + clientHeight >= scrollHeight - 80) {
-                hasMarkedRead.current = true
-                markRead(article.id, true)
-            }
-        }
-        el.addEventListener('scroll', onScroll, { passive: true })
-        return () => el.removeEventListener('scroll', onScroll)
-    }, [article?.id])
-
-    if (!article) return <div style={S.container}><div style={S.empty}>Article not found</div></div>
+    if (!article) return <div style={S.container}><div style={S.empty}>{t("page.articleNotFound")}</div></div>
 
     const handleExport = async (fmt: 'md' | 'html') => {
         try {
-            const content = await window.feeds.exportArticle(article.id, fmt)
-            const blob = new Blob([content], { type: fmt === 'md' ? 'text/markdown' : 'text/html' })
-            const url = URL.createObjectURL(blob)
-            const a = document.createElement('a')
-            a.href = url
-            a.download = `${article.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_').slice(0, 50)}.${fmt}`
-            a.click()
-            URL.revokeObjectURL(url)
+            // The native save dialog runs on the Rust side; returns the saved path or "" on cancel.
+            await window.feeds.writeArticleExport(article.id, fmt)
         } catch (e) { console.error("Export:", e) }
+    }
+
+    const handleDelete = async () => {
+        let ok = false
+        const msg = `${t("detail.deleteConfirm")}\n\n"${article.title}"`
+        try {
+            ok = await ask(msg, { title: t("detail.delete"), kind: "warning" })
+        } catch {
+            ok = window.confirm(msg)
+        }
+        if (!ok) return
+        try {
+            await deleteArticle(article.id)
+        } catch (e) { console.error("Delete:", e) }
     }
 
     const handleAddTag = () => {
@@ -111,7 +104,7 @@ const ArticleDetail: React.FC<Props> = ({ article }) => {
             const full = await window.feeds.fetchFullText(article.id, article.link)
             setFullText(full)
         } catch (e) {
-            setExtractError(typeof e === "string" ? e : "Failed to extract full text")
+            setExtractError(typeof e === "string" ? e : t("detail.extractFailed", { err: String(e) }))
         } finally {
             setExtracting(false)
         }
@@ -131,50 +124,53 @@ const ArticleDetail: React.FC<Props> = ({ article }) => {
 
             {/* Tags */}
             <div style={S.tags}>
-                {currentArticleTags.map(t => (
-                    <span key={t.id} style={S.tag}>
-                        {t.name}
-                        <button style={S.tagRemove} onClick={() => removeTag(article.id, t.id)} title="Remove tag">
+                {currentArticleTags.map(tag => (
+                    <span key={tag.id} style={S.tag}>
+                        {tag.name}
+                        <button style={S.tagRemove} onClick={() => removeTag(article.id, tag.id)} title={t("detail.removeTag")}>
                             <DismissRegular fontSize={10} />
                         </button>
                     </span>
                 ))}
                 {showTagInput ? (
                     <div style={S.tagInput}>
-                        <Input size="small" style={{ width: "120px" }} placeholder="New tag..."
+                        <Input size="small" style={{ width: "120px" }} placeholder={t("detail.addTag")}
                             value={tagInput}
                             onChange={(_, d) => setTagInput(d.value)}
                             onKeyDown={e => e.key === "Enter" && handleAddTag()} />
-                        <Button size="small" appearance="primary" onClick={handleAddTag}>Add</Button>
-                        <Button size="small" appearance="subtle" onClick={() => { setShowTagInput(false); setTagInput("") }}>Cancel</Button>
+                        <Button size="small" appearance="primary" onClick={handleAddTag}>{t("common.add")}</Button>
+                        <Button size="small" appearance="subtle" onClick={() => { setShowTagInput(false); setTagInput("") }}>{t("common.cancel")}</Button>
                     </div>
                 ) : (
                     <Button size="small" appearance="subtle" icon={<AddRegular />}
-                        onClick={() => setShowTagInput(true)}>Tag</Button>
+                        onClick={() => setShowTagInput(true)}>{t("detail.tagButton")}</Button>
                 )}
             </div>
 
             <div style={S.actions}>
                 <Button appearance="subtle" size="small" icon={<CheckmarkCircleRegular />}
                     onClick={() => markRead(article.id, !article.is_read)}
-                    disabled={article.is_read === 1}>Mark Read</Button>
+                    disabled={article.is_read === 1}>{t("detail.markRead")}</Button>
                 <Button appearance="subtle" size="small"
                     icon={article.is_starred ? <Star20Filled style={{ color: tokens.colorBrandForeground1 }} /> : <Star20Regular />}
-                    onClick={() => toggleStar(article.id)}>Star</Button>
+                    onClick={() => toggleStar(article.id)}>{t("detail.star")}</Button>
                 <Button appearance="subtle" size="small" icon={<OpenRegular />}
-                    onClick={() => article.link && window.utils.openExternal(article.link)}>Original</Button>
+                    onClick={() => article.link && window.utils.openExternal(article.link)}>{t("detail.original")}</Button>
                 <Button appearance="subtle" size="small" icon={<DocumentTextRegular />}
                     onClick={handleExtractFullText}
-                    disabled={!article.link || extracting}>{extracting ? "Extracting..." : "Full Text"}</Button>
+                    disabled={!article.link || extracting}>{extracting ? t("common.extracting") : t("detail.fullText")}</Button>
                 <div style={{ flex: 1 }} />
                 <Button appearance="subtle" size="small" icon={<ArrowDownloadRegular />}
-                    onClick={() => handleExport('md')}>MD</Button>
+                    onClick={() => handleExport('md')}>{t("detail.exportMd")}</Button>
                 <Button appearance="subtle" size="small" icon={<ArrowDownloadRegular />}
-                    onClick={() => handleExport('html')}>HTML</Button>
+                    onClick={() => handleExport('html')}>{t("detail.exportHtml")}</Button>
+                <Button appearance="subtle" size="small" icon={<DeleteRegular />}
+                    style={{ color: "#d32f2f" }}
+                    onClick={handleDelete}>{t("detail.delete")}</Button>
             </div>
             <ArticleAI articleId={article.id} />
             {extractError && (
-                <div style={{ fontSize: "12px", color: "#d32f2f", margin: "0 0 10px" }}>Full text extraction failed: {extractError}</div>
+                <div style={{ fontSize: "12px", color: "#d32f2f", margin: "0 0 10px" }}>{extractError}</div>
             )}
             <div className="article-content" style={S.content} ref={contentRef}
                 dangerouslySetInnerHTML={{ __html: fullText ?? (article.content || article.summary || "") }} />

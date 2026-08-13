@@ -1,6 +1,7 @@
 import * as React from "react"
 import { useEffect, useState } from "react"
 import { useAppStore } from "../store"
+import { useI18n } from "../i18n"
 import { ThemeSettings } from "../schema-types"
 import { Select, RadioGroup, Radio, Button, Input, Switch, Slider, Spinner, tokens } from "@fluentui/react-components"
 import { ArrowLeftRegular, DismissRegular, AddRegular, ArrowSyncRegular, SearchRegular, FolderRegular } from "@fluentui/react-icons"
@@ -73,6 +74,7 @@ const FeedsTab: React.FC = () => {
     const refreshFeed = useAppStore(s => s.refreshFeed)
     const refreshAll = useAppStore(s => s.refreshAll)
     const updateFeed = useAppStore(s => s.updateFeed)
+    const { t } = useI18n()
 
     const existingGroups = React.useMemo(() => {
         const groups = new Set(feeds.map(f => f.group_name).filter(Boolean))
@@ -82,7 +84,9 @@ const FeedsTab: React.FC = () => {
     const [url, setUrl] = useState("")
     const [groupName, setGroupName] = useState("")
     const [adding, setAdding] = useState(false)
+    const [importing, setImporting] = useState(false)
     const [error, setError] = useState("")
+    const [importResult, setImportResult] = useState("")
     const [discovering, setDiscovering] = useState(false)
     const [discoveredFeeds, setDiscoveredFeeds] = useState<Array<{ url: string; title: string; type: string }>>([])
     const fileInputRef = React.useRef<HTMLInputElement>(null)
@@ -119,11 +123,20 @@ const FeedsTab: React.FC = () => {
     const handleOpmlImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0]
         if (!file) return
+        setImporting(true)
         try {
-            const msg = await window.feeds.importOpml(await file.text())
-            setError(msg)
+            const [added, skipped] = await window.feeds.importOpml(await file.text())
+            setError("")
+            setImportResult(t("settings.importResult", { added, skipped }))
             await useAppStore.getState().loadFeeds()
-        } catch (err) { setError("Import failed: " + String(err)) }
+        } catch (err) {
+            setError(t("settings.importFailed", { err: String(err) }))
+            setImportResult("")
+        }
+        finally {
+            setImporting(false)
+            e.target.value = ""
+        }
     }
 
     const handleOpmlExport = async () => {
@@ -136,34 +149,34 @@ const FeedsTab: React.FC = () => {
 
     return (
         <>
-            <div style={S.sectionTitle}>Add Feed</div>
+            <div style={S.sectionTitle}>{t("settings.addFeed")}</div>
             <div style={S.addForm}>
-                <Input style={{ flex: "1 1 240px" }} placeholder="RSS Feed URL or website" value={url} onChange={(_, d) => setUrl(d.value)} />
+                <Input style={{ flex: "1 1 240px" }} placeholder={t("settings.feedUrlPlaceholder")} value={url} onChange={(_, d) => setUrl(d.value)} />
                 {existingGroups.length > 0 ? (
                     <select value={groupName} onChange={e => setGroupName(e.target.value)}
                         style={{ flex: "0 0 150px", fontSize: "13px", padding: "0 8px", borderRadius: "4px",
                             border: "1px solid var(--neutralLayer3)", backgroundColor: "var(--neutralLayer1)",
                             color: tokens.colorNeutralForeground1, cursor: "pointer", height: "32px" }}>
-                        <option value="">No group</option>
+                        <option value="">{t("settings.noGroup")}</option>
                         {existingGroups.map(g => <option key={g} value={g}>{g}</option>)}
-                        <option value="__new__">+ New group...</option>
+                        <option value="__new__">{t("settings.newGroup")}</option>
                     </select>
                 ) : (
-                    <Input style={{ flex: "0 0 150px" }} placeholder="Group (optional)" value={groupName}
+                    <Input style={{ flex: "0 0 150px" }} placeholder={t("settings.groupOptional")} value={groupName}
                         onChange={(_, d) => setGroupName(d.value)} />
                 )}
                 {groupName === "__new__" && (
-                    <Input style={{ flex: "0 0 120px" }} placeholder="Group name"
+                    <Input style={{ flex: "0 0 120px" }} placeholder={t("settings.groupName")}
                         onChange={(_, d) => setGroupName(d.value)}
                         onKeyDown={e => e.key === "Enter" && handleAdd()} autoFocus />
                 )}
                 <Button appearance="primary" icon={<AddRegular />} onClick={handleAdd} disabled={adding || !url.trim()}>
-                    {adding ? "..." : "Add"}
+                    {adding ? "..." : t("common.add")}
                 </Button>
             </div>
             <div style={S.addForm}>
                 <Button appearance="subtle" size="small" icon={<SearchRegular />} onClick={handleDiscover}
-                    disabled={discovering || !url.trim()}>{discovering ? "Scanning..." : "Auto-discover feeds"}</Button>
+                    disabled={discovering || !url.trim()}>{discovering ? t("common.scanning") : t("settings.discover")}</Button>
             </div>
             {discoveredFeeds.map((f, i) => (
                 <div key={i} style={S.discoverResult} onClick={() => handleAddDiscovered(f.url)}>
@@ -171,35 +184,38 @@ const FeedsTab: React.FC = () => {
                         <div style={S.feedTitle}>{f.title}</div>
                         <div style={S.feedUrl}>{f.url}</div>
                     </div>
-                    <Button appearance="primary" size="small" icon={<AddRegular />}>Add</Button>
+                    <Button appearance="primary" size="small" icon={<AddRegular />}>{t("common.add")}</Button>
                 </div>
             ))}
             {error && <div style={{ ...S.hint, color: "var(--red)", marginBottom: 12 }}>{error}</div>}
+            {importResult && <div style={{ ...S.hint, color: "#2e7d32", marginBottom: 12 }}>{importResult}</div>}
 
             {feeds.length > 0 && (
                 <>
                     <div style={{ display: "flex", alignItems: "center", marginTop: "32px", marginBottom: "12px" }}>
-                        <div style={{ ...S.sectionTitle, marginBottom: 0 }}>Subscriptions</div>
+                        <div style={{ ...S.sectionTitle, marginBottom: 0 }}>{t("settings.subscriptions")}</div>
                         <div style={{ flex: 1 }} />
                         <span style={{ fontSize: "12px", color: tokens.colorNeutralForeground4, marginRight: "12px" }}>
-                            {feeds.length} feed{feeds.length > 1 ? "s" : ""}
+                            {t("settings.feedCount", { count: feeds.length })}
                         </span>
-                        <Button appearance="subtle" icon={<ArrowSyncRegular />} size="small" onClick={refreshAll}>Refresh All</Button>
+                        <Button appearance="subtle" icon={<ArrowSyncRegular />} size="small" onClick={refreshAll}>{t("settings.refreshAll")}</Button>
                         <input ref={fileInputRef} type="file" accept=".opml,.xml" style={{ display: "none" }} onChange={handleOpmlImport} />
-                        <Button appearance="subtle" size="small" onClick={() => fileInputRef.current?.click()}>Import</Button>
-                        <Button appearance="subtle" size="small" onClick={handleOpmlExport}>Export</Button>
+                        <Button appearance="subtle" size="small" onClick={() => fileInputRef.current?.click()} disabled={importing}>
+                            {importing ? t("common.importing") : t("common.import")}
+                        </Button>
+                        <Button appearance="subtle" size="small" onClick={handleOpmlExport}>{t("common.export")}</Button>
                     </div>
                     {(() => {
                         const grouped = new Map<string, typeof feeds>()
                         for (const f of feeds) {
-                            const key = f.group_name || "Ungrouped"
+                            const key = f.group_name || t("settings.ungrouped")
                             if (!grouped.has(key)) grouped.set(key, [])
                             grouped.get(key)!.push(f)
                         }
                         const entries = Array.from(grouped.entries())
                         entries.sort(([a], [b]) => {
-                            if (a === "Ungrouped" && b !== "Ungrouped") return -1
-                            if (a !== "Ungrouped" && b === "Ungrouped") return 1
+                            if (a === t("settings.ungrouped") && b !== t("settings.ungrouped")) return -1
+                            if (a !== t("settings.ungrouped") && b === t("settings.ungrouped")) return 1
                             return a.localeCompare(b)
                         })
                         return entries.map(([group, groupFeeds]) => (
@@ -213,19 +229,19 @@ const FeedsTab: React.FC = () => {
                                         <div style={S.feedInfo}>
                                             <div style={S.feedTitle}>{f.title || f.url}</div>
                                             <div style={S.feedUrl}>{f.url}</div>
-                                            <div style={S.feedCount}>{f.article_count} articles{f.unread_count > 0 ? ` (${f.unread_count} unread)` : ""}{f.error_count > 0 ? ` · ${f.error_count} errors` : ""}</div>
+                                            <div style={S.feedCount}>{t("settings.articleCount", { count: f.article_count })}{f.unread_count > 0 ? ` (${t("page.unreadCount", { count: f.unread_count })})` : ""}{f.error_count > 0 ? ` · ${t("settings.errors", { count: f.error_count })}` : ""}</div>
                                         </div>
                                         <select value={f.group_name} onChange={e => updateFeed(f.id, f.title, e.target.value)}
                                             style={{ fontSize: "12px", padding: "2px 6px", borderRadius: "4px",
                                                 border: "1px solid var(--neutralLayer3)", backgroundColor: "var(--neutralLayer2)",
                                                 color: tokens.colorNeutralForeground2, cursor: "pointer", maxWidth: "100px" }}>
-                                            <option value="">Ungrouped</option>
+                                            <option value="">{t("settings.ungrouped")}</option>
                                             {existingGroups.filter(g => g !== f.group_name).map(g => <option key={g} value={g}>{g}</option>)}
-                                            {f.group_name && f.group_name !== "Ungrouped" && !existingGroups.includes(f.group_name) && (
+                                            {f.group_name && !existingGroups.includes(f.group_name) && (
                                                 <option value={f.group_name}>{f.group_name}</option>
                                             )}
                                         </select>
-                                        <Button appearance="subtle" size="small" onClick={() => refreshFeed(f.id)}>Refresh</Button>
+                                        <Button appearance="subtle" size="small" onClick={() => refreshFeed(f.id)}>{t("common.refresh")}</Button>
                                         <Button appearance="subtle" size="small" icon={<DismissRegular />} onClick={() => removeFeed(f.id)} />
                                     </div>
                                 ))}
@@ -237,7 +253,7 @@ const FeedsTab: React.FC = () => {
 
             {feeds.length === 0 && !adding && (
                 <div style={{ textAlign: "center", color: tokens.colorNeutralForeground4, padding: "40px 0", fontSize: "13px" }}>
-                    Paste a website URL or RSS feed above to subscribe
+                    {t("settings.pasteHint")}
                 </div>
             )}
         </>
@@ -253,6 +269,8 @@ const GeneralTab: React.FC = () => {
     const [proxyEnabled, setProxyEnabled] = useState(false)
     const [proxyUrl, setProxyUrl] = useState("")
     const [notifyOnRefresh, setNotifyOnRefresh] = useState(true)
+    const [minimizeToTray, setMinimizeToTray] = useState(true)
+    const { t, setLocale } = useI18n()
 
     useEffect(() => {
         window.settings.getThemeSettings().then(setTheme)
@@ -262,27 +280,28 @@ const GeneralTab: React.FC = () => {
         window.settings.getProxyStatus().then(setProxyEnabled)
         window.settings.getProxy().then(setProxyUrl)
         window.settings.getNotifyOnRefresh().then(setNotifyOnRefresh)
+        window.settings.getMinimizeToTray().then(setMinimizeToTray)
     }, [])
 
     return (
         <>
-            <div style={S.sectionTitle}>Appearance</div>
+            <div style={S.sectionTitle}>{t("settings.appearance")}</div>
             <div style={S.field}>
-                <div style={S.label}>Language</div>
-                <Select value={language} onChange={(_, d) => { setLanguage(d.value); window.settings.setLocaleSettings(d.value) }}>
-                    {languages.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
+                <div style={S.label}>{t("settings.language")}</div>
+                <Select value={language} onChange={(_, d) => { setLanguage(d.value); window.settings.setLocaleSettings(d.value); setLocale(d.value) }}>
+                    {languages.map(l => <option key={l.value} value={l.value}>{l.value === "default" ? t("settings.followSystem") : l.label}</option>)}
                 </Select>
             </div>
             <div style={S.field}>
-                <div style={S.label}>Theme</div>
+                <div style={S.label}>{t("settings.theme")}</div>
                 <RadioGroup value={theme} onChange={(_, d) => { setTheme(d.value); window.settings.setThemeSettings(d.value as ThemeSettings) }}>
-                    <Radio value="system" label="Follow System" />
-                    <Radio value="light" label="Light" />
-                    <Radio value="dark" label="Dark" />
+                    <Radio value="system" label={t("settings.themeSystem")} />
+                    <Radio value="light" label={t("settings.themeLight")} />
+                    <Radio value="dark" label={t("settings.themeDark")} />
                 </RadioGroup>
             </div>
             <div style={S.field}>
-                <div style={S.label}>Reading Font Size</div>
+                <div style={S.label}>{t("settings.readingFontSize")}</div>
                 <div style={S.sliderRow}>
                     <div style={S.sliderVal}>{fontSize}px</div>
                     <div style={{ flex: 1 }}>
@@ -295,32 +314,38 @@ const GeneralTab: React.FC = () => {
                             }} />
                     </div>
                 </div>
-                <div style={S.hint}>Title: {Math.round(fontSize * 1.5)}px · Body: {fontSize}px</div>
+                <div style={S.hint}>{t("settings.fontHint", { title: Math.round(fontSize * 1.5), body: fontSize })}</div>
             </div>
 
-            <div style={{ ...S.sectionTitle, marginTop: "32px" }}>Updates</div>
+            <div style={{ ...S.sectionTitle, marginTop: "32px" }}>{t("settings.updates")}</div>
             <div style={S.field}>
-                <div style={S.label}>Auto Refresh</div>
+                <div style={S.label}>{t("settings.autoRefresh")}</div>
                 <Select value={fetchInterval} onChange={(_, d) => { setFetchInterval(d.value); window.settings.setFetchInterval(Number(d.value)) }}>
-                    {fetchIntervals.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    {fetchIntervals.map(o => <option key={o.value} value={o.value}>{o.value === "0" ? t("common.never") : o.label}</option>)}
                 </Select>
             </div>
             <div style={S.field}>
-                <div style={S.label}>Refresh Notifications</div>
-                <Switch checked={notifyOnRefresh} label={notifyOnRefresh ? "On" : "Off"}
+                <div style={S.label}>{t("settings.refreshNotifications")}</div>
+                <Switch checked={notifyOnRefresh} label={notifyOnRefresh ? t("common.on") : t("common.off")}
                     onChange={(_, d) => { setNotifyOnRefresh(d.checked); window.settings.setNotifyOnRefresh(d.checked) }} />
-                <div style={S.hint}>Notify when a feed refresh batch finishes</div>
+                <div style={S.hint}>{t("settings.refreshNotificationsHint")}</div>
+            </div>
+            <div style={S.field}>
+                <div style={S.label}>{t("settings.minimizeToTray")}</div>
+                <Switch checked={minimizeToTray} label={minimizeToTray ? t("common.on") : t("common.off")}
+                    onChange={(_, d) => { setMinimizeToTray(d.checked); window.settings.setMinimizeToTray(d.checked) }} />
+                <div style={S.hint}>{t("settings.minimizeToTrayHint")}</div>
             </div>
 
-            <div style={{ ...S.sectionTitle, marginTop: "32px" }}>Network</div>
+            <div style={{ ...S.sectionTitle, marginTop: "32px" }}>{t("settings.network")}</div>
             <div style={S.field}>
-                <div style={S.label}>PAC Proxy</div>
-                <Switch checked={proxyEnabled} label={proxyEnabled ? "On" : "Off"}
+                <div style={S.label}>{t("settings.pacProxy")}</div>
+                <Switch checked={proxyEnabled} label={proxyEnabled ? t("common.on") : t("common.off")}
                     onChange={(_, d) => { setProxyEnabled(d.checked); window.settings.setProxyEnabled(d.checked) }} />
                 {proxyEnabled && (
                     <div style={{ ...S.row, marginTop: 8 }}>
-                        <Input style={{ flex: 1 }} placeholder="PAC proxy URL" value={proxyUrl} onChange={(_, d) => setProxyUrl(d.value)} />
-                        <Button size="small" onClick={() => window.settings.setProxy(proxyUrl)}>Apply</Button>
+                        <Input style={{ flex: 1 }} placeholder={t("settings.proxyUrlPlaceholder")} value={proxyUrl} onChange={(_, d) => setProxyUrl(d.value)} />
+                        <Button size="small" onClick={() => window.settings.setProxy(proxyUrl)}>{t("common.apply")}</Button>
                     </div>
                 )}
             </div>
@@ -334,6 +359,7 @@ interface RssSite { routes: RssRoute[] }
 
 const RssHubTab: React.FC = () => {
     const addFeed = useAppStore(s => s.addFeed)
+    const { t } = useI18n()
     const [instance, setInstance] = useState("https://rsshub.app")
     const [sites, setSites] = useState<Record<string, RssSite>>({})
     const [loading, setLoading] = useState(false)
@@ -407,11 +433,11 @@ const RssHubTab: React.FC = () => {
 
     const handleAdd = async (path: string) => {
         const url = buildUrl(path)
-        if (url.includes(":")) { setError("Please fill in all required parameters (marked with a *)"); return }
+        if (url.includes(":")) { setError(t("settings.fillParams")); return }
         setError(""); setAddedMsg("")
         try {
             await addFeed(url, "RSSHub")
-            setAddedMsg(`Added: ${url}`)
+            setAddedMsg(t("settings.added", { url }))
             setExpandedRoute(null)
         } catch (e) { setError(String(e)) }
     }
@@ -421,14 +447,14 @@ const RssHubTab: React.FC = () => {
 
     return (
         <>
-            <div style={S.sectionTitle}>RSSHub</div>
-            <div style={S.hint}>Browse RSSHub routes and subscribe with one click. 3000+ feeds across hundreds of sites.</div>
+            <div style={S.sectionTitle}>{t("settings.rsshub")}</div>
+            <div style={S.hint}>{t("settings.rsshubHint")}</div>
 
             <div style={{ ...S.row, margin: "12px 0" }}>
-                <Input style={{ flex: 1 }} placeholder="RSSHub instance, e.g. https://rsshub.app"
+                <Input style={{ flex: 1 }} placeholder={t("settings.rsshubInstance")}
                     value={instance} onChange={(_, d) => setInstance(d.value)} />
                 <Button appearance="primary" icon={<ArrowSyncRegular />} onClick={loadRoutes}
-                    disabled={loading || !instance.trim()}>{loading ? "Loading..." : "Load Routes"}</Button>
+                    disabled={loading || !instance.trim()}>{loading ? t("common.loading") : t("settings.loadRoutes")}</Button>
             </div>
 
             {error && <div style={{ fontSize: "12px", color: "#d32f2f", margin: "4px 0 10px" }}>{error}</div>}
@@ -437,14 +463,14 @@ const RssHubTab: React.FC = () => {
             {Object.keys(sites).length > 0 && (
                 <>
                     <div style={{ ...S.row, margin: "14px 0 10px" }}>
-                        <Input style={{ flex: 1 }} placeholder="Search routes (site name or path)..." contentBefore={<SearchRegular />}
+                        <Input style={{ flex: 1 }} placeholder={t("settings.searchRoutes")} contentBefore={<SearchRegular />}
                             value={search} onChange={(_, d) => setSearch(d.value)} />
                         <span style={{ fontSize: "12px", color: tokens.colorNeutralForeground4 }}>
-                            {siteEntries.length} sites · {totalRoutes} routes
+                            {t("settings.sitesRoutes", { sites: siteEntries.length, routes: totalRoutes })}
                         </span>
                     </div>
 
-                    {siteEntries.length === 0 && <div style={S.hint}>No routes match your search.</div>}
+                    {siteEntries.length === 0 && <div style={S.hint}>{t("settings.noRoutes")}</div>}
 
                     {siteEntries.map(([site, s]) => {
                         const isOpen = expandedSites.has(site)
@@ -480,7 +506,7 @@ const RssHubTab: React.FC = () => {
                                                             {r.docs && <div style={{ fontSize: "12px", color: tokens.colorNeutralForeground3, marginBottom: "8px" }}>{r.docs}</div>}
                                                             {ps.length === 0 ? (
                                                                 <Button size="small" appearance="primary" icon={<AddRegular />}
-                                                                    onClick={() => handleAdd(r.path)}>Subscribe</Button>
+                                                                    onClick={() => handleAdd(r.path)}>{t("settings.subscribe")}</Button>
                                                             ) : (
                                                                 <>
                                                                     {ps.map(p => (
@@ -489,14 +515,14 @@ const RssHubTab: React.FC = () => {
                                                                                 {p}{r.parameters?.[p] ? "" : " *"}
                                                                             </div>
                                                                             <Input size="small" style={{ width: "100%" }}
-                                                                                placeholder={r.parameters?.[p] ?? `Enter ${p}`}
+                                                                                placeholder={r.parameters?.[p] ?? t("settings.enterParam", { param: p })}
                                                                                 value={paramVals[p] ?? ""}
                                                                                 onChange={(_, d) => setParamVals(prev => ({ ...prev, [p]: d.value }))} />
                                                                         </div>
                                                                     ))}
                                                                     <div style={{ fontSize: "11px", color: tokens.colorNeutralForeground4, margin: "6px 0", wordBreak: "break-all" }}>{url}</div>
                                                                     <Button size="small" appearance="primary" icon={<AddRegular />}
-                                                                        onClick={() => handleAdd(r.path)}>Subscribe</Button>
+                                                                        onClick={() => handleAdd(r.path)}>{t("settings.subscribe")}</Button>
                                                                 </>
                                                             )}
                                                         </div>
@@ -518,20 +544,24 @@ const RssHubTab: React.FC = () => {
 }
 
 // ═══ About Tab ═══
-const AboutTab: React.FC = () => (
-    <>
-        <div style={S.sectionTitle}>About</div>
-        <div style={S.aboutTitle}>Rust RSS Reader</div>
-        <div style={S.aboutVer}>Version 0.1.0</div>
-        <div style={S.aboutText}>A fast, native RSS reader — all data stored locally.</div>
-        <div style={S.aboutTech}>Tauri v2 · React 19 · Fluent UI · SQLite</div>
-    </>
-)
+const AboutTab: React.FC = () => {
+    const { t } = useI18n()
+    return (
+        <>
+            <div style={S.sectionTitle}>{t("settings.about")}</div>
+            <div style={S.aboutTitle}>Rust RSS Reader</div>
+            <div style={S.aboutVer}>{t("settings.version")}</div>
+            <div style={S.aboutText}>{t("settings.aboutText")}</div>
+            <div style={S.aboutTech}>{t("settings.aboutTech")}</div>
+        </>
+    )
+}
 
 // ═══ Main Settings ═══
 const Settings: React.FC = () => {
     const display = useAppStore(s => s.settingsDisplay)
     const toggleSettings = useAppStore(s => s.toggleSettings)
+    const { t } = useI18n()
 
     useEffect(() => {
         if (!display) return
@@ -545,18 +575,18 @@ const Settings: React.FC = () => {
     return (
         <div style={S.page}>
             <div style={S.header}>
-                <Button appearance="subtle" icon={<ArrowLeftRegular />} onClick={() => toggleSettings(false)}>Back</Button>
+                <Button appearance="subtle" icon={<ArrowLeftRegular />} onClick={() => toggleSettings(false)}>{t("common.back")}</Button>
                 <div style={{ flex: 1 }} />
-                <div style={S.headerTitle}>Settings</div>
+                <div style={S.headerTitle}>{t("settings.title")}</div>
                 <div style={{ flex: 1 }} />
             </div>
             <div style={S.content}>
                 <FeedsTab />
-                <div style={{ ...S.sectionTitle, marginTop: "40px" }}>General</div>
+                <div style={{ ...S.sectionTitle, marginTop: "40px" }}>{t("settings.general")}</div>
                 <GeneralTab />
-                <div style={{ ...S.sectionTitle, marginTop: "40px" }}>RSSHub</div>
+                <div style={{ ...S.sectionTitle, marginTop: "40px" }}>{t("settings.rsshub")}</div>
                 <RssHubTab />
-                <div style={{ ...S.sectionTitle, marginTop: "40px" }}>About</div>
+                <div style={{ ...S.sectionTitle, marginTop: "40px" }}>{t("settings.about")}</div>
                 <AboutTab />
             </div>
         </div>

@@ -9,6 +9,7 @@ export interface AppState {
     // app
     locale: string | null
     menu: boolean
+    refreshing: boolean
     title: string
     settingsDisplay: boolean
     contextMenu: { type: ContextMenuType; event?: string; position?: [number, number]; target?: unknown }
@@ -22,6 +23,12 @@ export interface AppState {
     searchText: string
     tagId: number | null  // null = no tag filter
     showTagsPage: boolean
+    prevIndex: number  // list index of the currently opened article (survives unread filtering)
+    // pagination (infinite scroll)
+    loadedCount: number
+    hasMoreArticles: boolean
+    loadingMore: boolean
+    starredView: boolean  // whether the list is the Starred view (needed for append loads)
 
     // data
     feeds: FeedRow[]
@@ -48,7 +55,8 @@ export interface AppState {
 
     // data actions
     loadFeeds: () => Promise<void>
-    loadArticles: (feedId?: number | null, opts?: { onlyUnread?: boolean; onlyStarred?: boolean }) => Promise<void>
+    loadArticles: (feedId?: number | null, opts?: { onlyUnread?: boolean; onlyStarred?: boolean; append?: boolean }) => Promise<void>
+    loadMoreArticles: () => Promise<void>
     loadArticle: (id: number) => Promise<void>
     addFeed: (url: string, groupName: string) => Promise<void>
     removeFeed: (id: number) => Promise<void>
@@ -58,6 +66,8 @@ export interface AppState {
     markRead: (id: number, read: boolean) => Promise<void>
     markAllRead: (feedId?: number) => Promise<void>
     toggleStar: (id: number) => Promise<void>
+    deleteArticle: (id: number) => Promise<void>
+    clearReadArticles: () => Promise<number>
     searchArticles: (query: string) => Promise<void>
 
     // tag actions
@@ -75,6 +85,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // app defaults
     locale: null,
     menu: true,
+    refreshing: false,
     title: "Rust RSS Reader",
     settingsDisplay: false,
     contextMenu: { type: ContextMenuType.Hidden },
@@ -88,6 +99,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     searchText: "",
     tagId: null,
     showTagsPage: false,
+    prevIndex: 0,
+    loadedCount: 0,
+    hasMoreArticles: false,
+    loadingMore: false,
+    starredView: false,
 
     // data defaults
     feeds: [],
@@ -119,14 +135,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         })
     },
     selectAllArticles: () => {
-        set({ feedId: null, itemId: null, searchOn: false, title: "All Articles", tagId: null, showTagsPage: false })
+        set({ feedId: null, itemId: null, searchOn: false, title: "All Articles", tagId: null, showTagsPage: false, starredView: false })
         get().loadArticles(null, { onlyUnread: get().onlyUnread })
     },
     selectFeed: (feedId, title) => {
-        set({ feedId, itemId: null, searchOn: false, title, tagId: null, showTagsPage: false })
+        set({ feedId, itemId: null, searchOn: false, title, tagId: null, showTagsPage: false, starredView: false })
         get().loadArticles(feedId, { onlyUnread: get().onlyUnread })
     },
-    selectArticle: (articleId) => set({ itemId: articleId }),
+    selectArticle: (articleId) => {
+        const idx = get().articles.findIndex(x => x.id === articleId)
+        const a = idx === -1 ? null : get().articles[idx]
+        set({ itemId: articleId, currentArticle: a, prevIndex: idx === -1 ? 0 : idx })
+        // Auto-mark as read as soon as the article is opened
+        if (a && a.is_read !== 1) get().markRead(articleId, true)
+    },
     backToList: () => set({ itemId: null }),
     toggleSearch: () => set(s => ({ searchOn: !s.searchOn })),
     setSearchText: (text) => set({ searchText: text }),
@@ -144,19 +166,46 @@ export const useAppStore = create<AppState>((set, get) => ({
         } catch (e) { console.error("loadFeeds:", e) }
     },
     loadArticles: async (feedId, opts) => {
+        const append = opts?.append ?? false
+        const offset = append ? get().loadedCount : 0
         try {
             const articles = await feedsBridge.getArticles({
                 feedId: feedId ?? undefined,
                 onlyUnread: opts?.onlyUnread,
                 onlyStarred: opts?.onlyStarred,
+                limit: 50,
+                offset,
             })
-            set({ articles })
+            set(s => ({
+                articles: append ? [...s.articles, ...articles] : articles,
+                loadedCount: offset + articles.length,
+                hasMoreArticles: articles.length === 50,
+                loadingMore: false,
+            }))
             // Batch-load tags
             if (articles.length > 0) {
                 const ids = articles.map(a => a.id)
-                feedsBridge.getArticlesTags(ids).then(tags => set({ articleTags: tags })).catch(() => {})
+                feedsBridge.getArticlesTags(ids).then(tags => set({ articleTags: { ...get().articleTags, ...tags } })).catch(() => {})
             }
-        } catch (e) { console.error("loadArticles:", e) }
+        } catch (e) { console.error("loadArticles:", e); set({ loadingMore: false }) }
+    },
+    loadMoreArticles: async () => {
+        const s = get()
+        if (!s.hasMoreArticles || s.loadingMore || s.searchOn || s.showTagsPage || s.itemId !== null) return
+        set({ loadingMore: true })
+        if (s.tagId !== null) {
+            try {
+                const arts = await feedsBridge.getArticlesByTag(s.tagId, 50, s.loadedCount)
+                set(st => ({
+                    articles: [...st.articles, ...arts],
+                    loadedCount: s.loadedCount + arts.length,
+                    hasMoreArticles: arts.length === 50,
+                    loadingMore: false,
+                }))
+            } catch (e) { console.error("loadMore:", e); set({ loadingMore: false }) }
+            return
+        }
+        await s.loadArticles(s.feedId, { onlyUnread: s.onlyUnread, onlyStarred: s.starredView, append: true })
     },
     loadArticle: async (id) => {
         try {
@@ -194,28 +243,49 @@ export const useAppStore = create<AppState>((set, get) => ({
         } catch (e) { console.error("refreshFeed:", e) }
     },
     refreshAll: async () => {
+        set({ refreshing: true })
         try {
             await feedsBridge.refreshAll()
             await get().loadFeeds()
             await get().loadArticles(get().feedId, { onlyUnread: get().onlyUnread })
         } catch (e) { console.error("refreshAll:", e) }
+        finally { set({ refreshing: false }) }
     },
     markRead: async (id, read) => {
+        const apply = (s: AppState) => {
+            const current = s.currentArticle?.id === id
+                ? { ...s.currentArticle, is_read: read ? 1 as const : 0 as const }
+                : s.currentArticle
+            if (read && s.onlyUnread) {
+                // In the "unread only" view, drop the article as soon as it is read
+                return { articles: s.articles.filter(a => a.id !== id), currentArticle: current }
+            }
+            if (!read && s.onlyUnread && current && current.id === id) {
+                // Restore it into the unread list, sorted by date desc
+                const articles = [...s.articles.filter(a => a.id !== id), current]
+                    .sort((a, b) => (b.pub_date || "").localeCompare(a.pub_date || ""))
+                return { articles, currentArticle: current }
+            }
+            return {
+                articles: s.articles.map(a => a.id === id ? { ...a, is_read: read ? 1 as const : 0 as const } : a),
+                currentArticle: current,
+            }
+        }
+        // Optimistic update keeps rapid toggles (e.g. double-press "m") consistent
+        set(apply)
         try {
             await feedsBridge.markRead(id, read)
-            // Update local state
-            set(s => ({
-                articles: s.articles.map(a => a.id === id ? { ...a, is_read: read ? 1 as const : 0 as const } : a),
-                currentArticle: s.currentArticle?.id === id ? { ...s.currentArticle, is_read: read ? 1 as const : 0 as const } : s.currentArticle,
-            }))
+            // Keep sidebar unread counts in sync
+            await get().loadFeeds()
         } catch (e) { console.error("markRead:", e) }
     },
     markAllRead: async (feedId) => {
         try {
             await feedsBridge.markAllRead(feedId)
             set(s => ({
-                articles: s.articles.map(a => ({ ...a, is_read: 1 as const })),
+                articles: s.onlyUnread ? [] : s.articles.map(a => ({ ...a, is_read: 1 as const })),
             }))
+            await get().loadFeeds()
         } catch (e) { console.error("markAllRead:", e) }
     },
     toggleStar: async (id) => {
@@ -226,6 +296,33 @@ export const useAppStore = create<AppState>((set, get) => ({
                 currentArticle: s.currentArticle?.id === id ? { ...s.currentArticle, is_starred: starred ? 1 as const : 0 as const } : s.currentArticle,
             }))
         } catch (e) { console.error("toggleStar:", e) }
+    },
+    deleteArticle: async (id) => {
+        try {
+            await feedsBridge.deleteArticle(id)
+            const s = get()
+            const { [id]: _removed, ...restTags } = s.articleTags
+            set({
+                articles: s.articles.filter(a => a.id !== id),
+                articleTags: restTags,
+            })
+            if (s.itemId === id) s.backToList()
+            // Keep sidebar unread counts in sync
+            await get().loadFeeds()
+        } catch (e) { console.error("deleteArticle:", e); throw e }
+    },
+    clearReadArticles: async () => {
+        try {
+            const removed = await feedsBridge.clearReadArticles()
+            const s = get()
+            // Drop deleted items from the current list and reset navigation
+            set({
+                articles: s.articles.filter(a => a.is_read !== 1),
+                itemId: null,
+            })
+            await get().loadFeeds()
+            return removed
+        } catch (e) { console.error("clearReadArticles:", e); throw e }
     },
     searchArticles: async (query) => {
         try {
@@ -274,9 +371,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         } catch (e) { console.error("removeTag:", e) }
     },
     selectTag: (tagId, tagName) => {
-        set({ feedId: null, tagId, searchOn: false, showTagsPage: false, title: tagName ? `#${tagName}` : "All Articles" })
+        set({ feedId: null, tagId, searchOn: false, showTagsPage: false, title: tagName ? `#${tagName}` : "All Articles", starredView: false, loadedCount: 0, hasMoreArticles: false })
         if (tagId) {
-            feedsBridge.getArticlesByTag(tagId, 50, 0).then(articles => set({ articles })).catch(() => {})
+            feedsBridge.getArticlesByTag(tagId, 50, 0).then(articles => set({
+                articles,
+                loadedCount: articles.length,
+                hasMoreArticles: articles.length === 50,
+            })).catch(() => {})
         } else {
             get().loadArticles(null)
         }

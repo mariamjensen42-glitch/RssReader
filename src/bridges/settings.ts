@@ -17,6 +17,9 @@ export const settingsBridge = {
     getNotifyOnRefresh: (): Promise<boolean> => invoke("get_notify_on_refresh"),
     setNotifyOnRefresh: (flag: boolean) => invoke("set_notify_on_refresh", { v: flag }),
 
+    getMinimizeToTray: (): Promise<boolean> => invoke("get_minimize_to_tray"),
+    setMinimizeToTray: (flag: boolean) => invoke("set_minimize_to_tray", { v: flag }),
+
     getDefaultView: (): Promise<ViewType> => invoke("get_view"),
     setDefaultView: (viewType: ViewType) => invoke("set_view", { v: viewType }),
 

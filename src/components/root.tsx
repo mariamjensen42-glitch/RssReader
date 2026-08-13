@@ -17,6 +17,7 @@ const useClasses = makeStyles({
 const Root: React.FC = () => {
     const closeContextMenu = useAppStore(s => s.closeContextMenu)
     const locale = useAppStore(s => s.locale) || "en-US"
+    const setLocale = useAppStore(s => s.setLocale)
 
     const classes = useClasses()
     const [isDarkMode, setIsDarkMode] = useState(() => 
@@ -24,6 +25,8 @@ const Root: React.FC = () => {
     )
 
     useEffect(() => {
+        // Initialize UI locale from persisted settings (default = follow system)
+        window.settings.getCurrentLocale().then(setLocale)
         window.settings.shouldUseDarkColors().then(setDark => setIsDarkMode(setDark))
         window.settings.addThemeUpdateListener(shouldDark => { setIsDarkMode(shouldDark) })
     }, [])
@@ -36,7 +39,7 @@ const Root: React.FC = () => {
     return (
         <FluentProvider theme={v9Theme} className={classes.root}>
             <CustomStyleHooksProvider value={CUSTOM_STYLE_HOOKS}>
-                <div id="root" key={locale} onMouseDown={closeContextMenu}>
+                <div id="root" onMouseDown={closeContextMenu}>
                     <Nav />
                     <Page />
                     <Menu />

@@ -14,6 +14,12 @@ impl Database {
         }
         let conn = Connection::open(&path).map_err(|e| e.to_string())?;
 
+        // WAL allows concurrent readers while the refresh workers write, reducing lock contention.
+        // Optional optimization: a failure (e.g. read-only media) must not prevent startup.
+        if let Err(e) = conn.pragma_update(None, "journal_mode", "WAL") {
+            eprintln!("failed to enable WAL mode: {}", e);
+        }
+
         conn.execute_batch(
             "            CREATE TABLE IF NOT EXISTS feeds (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,6 +53,7 @@ impl Database {
                 UNIQUE(feed_id, guid)
             );
             CREATE INDEX IF NOT EXISTS idx_articles_feed_id ON articles(feed_id);
+            CREATE INDEX IF NOT EXISTS idx_articles_feed_read ON articles(feed_id, is_read);
             CREATE INDEX IF NOT EXISTS idx_articles_pub_date ON articles(pub_date);
             CREATE INDEX IF NOT EXISTS idx_articles_is_read ON articles(is_read);
             CREATE INDEX IF NOT EXISTS idx_articles_is_starred ON articles(is_starred);
@@ -85,6 +92,31 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Insert many feeds inside a single transaction, skipping URLs that already exist.
+    /// Used by OPML import so hundreds of feeds don't pay one fsync/transaction each.
+    pub fn add_feeds_batch(&self, feeds: &[(String, String, String)]) -> Result<usize, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut added = 0usize;
+        for (title, url, group) in feeds {
+            let exists: i64 = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM feeds WHERE url = ?1)",
+                    params![url],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if exists != 0 { continue; }
+            tx.execute(
+                "INSERT INTO feeds (title, url, group_name) VALUES (?1, ?2, ?3)",
+                params![title, url, group],
+            ).map_err(|e| e.to_string())?;
+            added += 1;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(added)
+    }
+
     pub fn remove_feed(&self, id: i64) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM articles WHERE feed_id = ?1", params![id]).map_err(|e| e.to_string())?;
@@ -103,15 +135,31 @@ impl Database {
 
     pub fn get_feeds(&self) -> Result<Vec<FeedRow>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // One grouped pass over articles instead of 2 subqueries per feed (708 feeds × 2
+        // COUNT subqueries took ~42s on a large DB; this is a single indexed scan).
+        let mut stats: std::collections::HashMap<i64, (i64, i64)> = std::collections::HashMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT feed_id, COUNT(*), SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END)
+                 FROM articles GROUP BY feed_id"
+            ).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
+            }).map_err(|e| e.to_string())?;
+            for r in rows {
+                let (fid, count, unread) = r.map_err(|e| e.to_string())?;
+                stats.insert(fid, (count, unread));
+            }
+        }
         let mut stmt = conn.prepare(
-            "SELECT f.id, f.title, f.url, f.link, f.description, f.group_name, f.icon_url, f.last_updated, f.etag, f.last_modified, f.error_count,
-                    (SELECT COUNT(*) FROM articles WHERE feed_id = f.id) as article_count,
-                    (SELECT COUNT(*) FROM articles WHERE feed_id = f.id AND is_read = 0) as unread_count
+            "SELECT f.id, f.title, f.url, f.link, f.description, f.group_name, f.icon_url, f.last_updated, f.etag, f.last_modified, f.error_count
              FROM feeds f ORDER BY f.title"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |row| {
+            let feed_id: i64 = row.get(0)?;
+            let (article_count, unread_count) = stats.get(&feed_id).copied().unwrap_or((0, 0));
             Ok(FeedRow {
-                id: row.get(0)?,
+                id: feed_id,
                 title: row.get(1)?,
                 url: row.get(2)?,
                 link: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
@@ -122,8 +170,8 @@ impl Database {
                 etag: row.get::<_, Option<String>>(8)?.unwrap_or_default(),
                 last_modified: row.get::<_, Option<String>>(9)?.unwrap_or_default(),
                 error_count: row.get(10)?,
-                article_count: row.get(11)?,
-                unread_count: row.get(12)?,
+                article_count,
+                unread_count,
             })
         }).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
@@ -158,6 +206,19 @@ impl Database {
     }
 
     // Articles
+
+    pub fn delete_article(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM articles WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn delete_read_articles(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // Starred articles are kept even when read (user explicitly saved them)
+        conn.execute("DELETE FROM articles WHERE is_read = 1 AND is_starred = 0", []).map_err(|e| e.to_string())?;
+        Ok(conn.changes() as i64)
+    }
 
     pub fn insert_article(&self, article: &NewArticle) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;

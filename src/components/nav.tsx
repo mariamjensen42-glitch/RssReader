@@ -1,6 +1,7 @@
 import * as React from "react"
 import { useEffect, useState } from "react"
 import { useAppStore } from "../store"
+import { useI18n } from "../i18n"
 import { ViewType } from "../schema-types"
 import { makeStyles, mergeClasses } from "@fluentui/react-components"
 import { FlatButton } from "./utils/FlatButton"
@@ -24,6 +25,15 @@ const useClasses = makeStyles({
     navBtnMinimize: { fontSize: "12px" },
     navGroupFirst: { marginLeft: "72px" },
     navGroupRight: { marginLeft: "auto" },
+    spin: {
+        animationName: {
+            from: { transform: "rotate(0deg)" },
+            to: { transform: "rotate(360deg)" },
+        },
+        animationDuration: "1s",
+        animationIterationCount: "infinite",
+        animationTimingFunction: "linear",
+    },
 })
 
 const Nav: React.FC = () => {
@@ -36,10 +46,12 @@ const Nav: React.FC = () => {
     const toggleMenu = useAppStore(s => s.toggleMenu)
     const toggleSettings = useAppStore(s => s.toggleSettings)
     const refreshAll = useAppStore(s => s.refreshAll)
+    const refreshing = useAppStore(s => s.refreshing)
     const markAllRead = useAppStore(s => s.markAllRead)
     const backToList = useAppStore(s => s.backToList)
     const onlyUnread = useAppStore(s => s.onlyUnread)
     const toggleUnread = useAppStore(s => s.toggleUnread)
+    const { t } = useI18n()
 
     const [maximized, setMaximized] = useState(false)
     const isBlurred = useIsBlurred()
@@ -83,7 +95,7 @@ const Nav: React.FC = () => {
         setViewMenuOpen(false)
     }
 
-    const viewLabel = viewType === ViewType.Cards ? "Cards" : viewType === ViewType.List ? "List" : viewType === ViewType.Magazine ? "Magazine" : "Three Column"
+    const viewLabel = viewType === ViewType.Cards ? t("nav.viewCards") : viewType === ViewType.List ? t("nav.viewList") : viewType === ViewType.Magazine ? t("nav.viewMagazine") : t("nav.viewThreeColumn")
     const isNonNavButtonShown = !settingsDisplay
     const firstGroup = isDarwin ? classes.navGroupFirst : undefined
     const systemItemOn = itemShown ? classes.navBtnSystemItemOn : undefined
@@ -98,11 +110,11 @@ const Nav: React.FC = () => {
             {isNonNavButtonShown && (
                 <FlatButtonGroup styleClass={firstGroup}>
                 {itemShown ? (
-                    <FlatButton styleClass={classes.navBtn} title="Back" onClick={backToList}>
+                    <FlatButton styleClass={classes.navBtn} title={t("nav.back")} onClick={backToList}>
                         <ArrowLeftRegular fontSize={16} />
                     </FlatButton>
                 ) : (
-                        <FlatButton styleClass={classes.navBtn} title="Menu" onClick={menu}>
+                        <FlatButton styleClass={classes.navBtn} title={t("nav.menu")} onClick={menu}>
                             <NavigationRegular fontSize={16} />
                         </FlatButton>
                     )}
@@ -114,20 +126,20 @@ const Nav: React.FC = () => {
             <FlatButtonGroup styleClass={classes.navGroupRight}>
                 {isNonNavButtonShown && (
                     <>
-                        <FlatButton styleClass={classes.navBtn} title="Refresh All" onClick={() => refreshAll()}>
-                            <ArrowSyncRegular fontSize={16} />
+                        <FlatButton styleClass={classes.navBtn} title={t("nav.refreshAll")} disabled={refreshing} onClick={() => refreshAll()}>
+                            <ArrowSyncRegular fontSize={16} className={refreshing ? classes.spin : undefined} />
                         </FlatButton>
-                        <FlatButton styleClass={classes.navBtn} title="Mark All Read"
+                        <FlatButton styleClass={classes.navBtn} title={t("nav.markAllRead")}
                             onClick={() => markAllRead(feedId ?? undefined)}>
                             <CheckmarkCircleRegular fontSize={16} />
                         </FlatButton>
                         <FlatButton styleClass={classes.navBtn}
-                            title={onlyUnread ? "Show All Articles" : "Unread Only"}
+                            title={onlyUnread ? t("nav.showAll") : t("nav.unreadOnly")}
                             onClick={toggleUnread}>
                             <FilterRegular fontSize={16}
                                 style={onlyUnread ? { color: "#4f6bed" } : undefined} />
                         </FlatButton>
-                        <FlatButton styleClass={classes.navBtn} title={`View: ${viewLabel}`}
+                        <FlatButton styleClass={classes.navBtn} title={t("nav.view", { view: viewLabel })}
                             onClick={() => setViewMenuOpen(!viewMenuOpen)}>
                             <EyeRegular fontSize={16} />
                         </FlatButton>
@@ -139,7 +151,7 @@ const Nav: React.FC = () => {
                                 zIndex: 20, minWidth: "130px", padding: "4px", overflow: "hidden",
                             }}>
                                 {[ViewType.Cards, ViewType.List, ViewType.Magazine, ViewType.Compact].map(v => {
-                                    const label = v === ViewType.Cards ? "Cards" : v === ViewType.List ? "List" : v === ViewType.Magazine ? "Magazine" : "Three Column"
+                                    const label = v === ViewType.Cards ? t("nav.viewCards") : v === ViewType.List ? t("nav.viewList") : v === ViewType.Magazine ? t("nav.viewMagazine") : t("nav.viewThreeColumn")
                                     const icon = v === ViewType.Cards ? <AppsListRegular /> : v === ViewType.List ? <TextBulletListRegular /> : v === ViewType.Magazine ? <GridRegular /> : <PanelRightRegular />
                                     const active = v === viewType
                                     return (
@@ -161,7 +173,7 @@ const Nav: React.FC = () => {
                             <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 19 }}
                                 onClick={() => setViewMenuOpen(false)} />
                         )}
-                        <FlatButton styleClass={classes.navBtn} title="Settings" onClick={settings}>
+                        <FlatButton styleClass={classes.navBtn} title={t("nav.settings")} onClick={settings}>
                             <SettingsRegular fontSize={16} />
                         </FlatButton>
                     </>
@@ -171,19 +183,19 @@ const Nav: React.FC = () => {
                         <FlatButtonSeparator />
                         <FlatButton variant="system"
                             styleClass={mergeClasses(classes.navBtn, classes.navBtnSystem, classes.navBtnMinimize, systemItemOn)}
-                            title="Minimize" onClick={minimize}>
+                            title={t("nav.minimize")} onClick={minimize}>
                             <SubtractRegular fontSize={12} />
                         </FlatButton>
                         <FlatButton variant="system"
                             styleClass={mergeClasses(classes.navBtn, classes.navBtnSystem, systemItemOn)}
-                            title="Maximize" onClick={maximize}>
+                            title={t("nav.maximize")} onClick={maximize}>
                             {maximized
                                 ? <DismissRegular fontSize={11} style={{ transform: "rotate(45deg)" }} />
                                 : <SquareRegular fontSize={10} />}
                         </FlatButton>
                         <FlatButton variant="close"
                             styleClass={mergeClasses(classes.navBtn, classes.navBtnSystem, systemItemOn)}
-                            title="Close" onClick={close}>
+                            title={t("nav.close")} onClick={close}>
                             <DismissRegular fontSize={14} />
                         </FlatButton>
                     </>

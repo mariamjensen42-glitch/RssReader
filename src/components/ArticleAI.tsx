@@ -7,6 +7,7 @@ import {
 import type { ViewpointsResult } from "../bridges/ai"
 import type { TagRow } from "../bridges/feeds"
 import { useAppStore } from "../store"
+import { useI18n } from "../i18n"
 
 const S = {
     panel: { maxWidth: "740px", margin: "0 auto", padding: "0 24px 32px", borderTop: "1px solid var(--neutralLayer3)" } as React.CSSProperties,
@@ -49,6 +50,7 @@ const ArticleAI: React.FC<Props> = ({ articleId }) => {
     const [error, setError] = React.useState<string>("")
     const [targetLang, setTargetLang] = React.useState("中文")
     const updateArticleTags = useAppStore(s => s.updateArticleTags)
+    const { t } = useI18n()
 
     const cached = articleId ? (cacheMap[articleId] ?? {}) : {}
 
@@ -117,42 +119,42 @@ const ArticleAI: React.FC<Props> = ({ articleId }) => {
     return (
         <div style={S.panel}>
             <div style={S.buttons}>
-                <Btn label="Summary" icon={<DocumentTextRegular />} active={isActive("summary")} hasData={hasCached("summary")} loading={loading}
+                <Btn label={t("ai.summary")} icon={<DocumentTextRegular />} active={isActive("summary")} hasData={hasCached("summary")} loading={loading}
                     onClick={() => handleClick("summary")} />
-                <Btn label="Auto Tags" icon={<TagMultipleRegular />} active={isActive("tags")} hasData={hasCached("tags")} loading={loading}
+                <Btn label={t("ai.autoTags")} icon={<TagMultipleRegular />} active={isActive("tags")} hasData={hasCached("tags")} loading={loading}
                     onClick={() => handleClick("tags")} />
-                <Btn label="Translate" icon={<TranslateRegular />} active={isActive("translate")} hasData={hasCached("translate")} loading={loading}
+                <Btn label={t("ai.translate")} icon={<TranslateRegular />} active={isActive("translate")} hasData={hasCached("translate")} loading={loading}
                     onClick={() => handleClick("translate")} />
-                <Btn label="Viewpoints" icon={<LightbulbFilamentRegular />} active={isActive("viewpoints")} hasData={hasCached("viewpoints")} loading={loading}
+                <Btn label={t("ai.viewpoints")} icon={<LightbulbFilamentRegular />} active={isActive("viewpoints")} hasData={hasCached("viewpoints")} loading={loading}
                     onClick={() => handleClick("viewpoints")} />
             </div>
 
             {loading && (
                 <div style={S.loading}>
                     <Spinner size="extra-tiny" />
-                    <span>{activeAction === "summary" ? "Generating summary..." : activeAction === "tags" ? "Analyzing tags..." : activeAction === "translate" ? "Translating..." : "Extracting viewpoints..."}</span>
+                    <span>{activeAction === "summary" ? t("ai.generatingSummary") : activeAction === "tags" ? t("ai.analyzingTags") : activeAction === "translate" ? t("ai.translating") : t("ai.extractingViewpoints")}</span>
                 </div>
             )}
 
             {error && (
                 <div style={{ ...S.result, color: "var(--colorPaletteRedForeground1)", backgroundColor: "transparent", border: "1px solid var(--neutralLayer3)" }}>
-                    <div style={S.resultHeader}><span>Error</span><Button appearance="subtle" size="small" icon={<DismissRegular />} onClick={dismiss} /></div>
+                    <div style={S.resultHeader}><span>{t("ai.error")}</span><Button appearance="subtle" size="small" icon={<DismissRegular />} onClick={dismiss} /></div>
                     {error}
                 </div>
             )}
 
             {isActive("summary") && cached.summary && (
-                <ResultPanel title="Summary" onRegenerate={() => regenerate("summary")} onDismiss={dismiss}>{cached.summary}</ResultPanel>
+                <ResultPanel title={t("ai.summary")} onRegenerate={() => regenerate("summary")} onDismiss={dismiss}>{cached.summary}</ResultPanel>
             )}
             {isActive("translate") && cached.translate && (
-                <ResultPanel title="Translation" onRegenerate={() => regenerate("translate")} onDismiss={dismiss}>{cached.translate}</ResultPanel>
+                <ResultPanel title={t("ai.translation")} onRegenerate={() => regenerate("translate")} onDismiss={dismiss}>{cached.translate}</ResultPanel>
             )}
             {isActive("tags") && (cached.tags?.length ?? 0) > 0 && (
                 <div style={S.result}>
                     <div style={S.resultHeader}>
-                        <span>Tags ({cached.tags!.length})</span>
+                        <span>{t("ai.autoTags")} ({cached.tags!.length})</span>
                         <div style={S.resultActions}>
-                            <Button appearance="subtle" size="small" icon={<ArrowSyncRegular />} onClick={() => regenerate("tags")} title="Regenerate" />
+                            <Button appearance="subtle" size="small" icon={<ArrowSyncRegular />} onClick={() => regenerate("tags")} title={t("ai.regenerate")} />
                             <Button appearance="subtle" size="small" icon={<DismissRegular />} onClick={dismiss} />
                         </div>
                     </div>
@@ -162,13 +164,13 @@ const ArticleAI: React.FC<Props> = ({ articleId }) => {
             {isActive("viewpoints") && cached.viewpoints && (
                 <div style={S.result}>
                     <div style={S.resultHeader}>
-                        <span>Viewpoints</span>
+                        <span>{t("ai.viewpoints")}</span>
                         <div style={S.resultActions}>
-                            <Button appearance="subtle" size="small" icon={<ArrowSyncRegular />} onClick={() => regenerate("viewpoints")} title="Regenerate" />
+                            <Button appearance="subtle" size="small" icon={<ArrowSyncRegular />} onClick={() => regenerate("viewpoints")} title={t("ai.regenerate")} />
                             <Button appearance="subtle" size="small" icon={<DismissRegular />} onClick={dismiss} />
                         </div>
                     </div>
-                    <div style={S.viewpoint}><strong>Stance:</strong> {(cached.viewpoints as ViewpointsResult).stance}</div>
+                    <div style={S.viewpoint}><strong>{t("ai.stance")}</strong> {(cached.viewpoints as ViewpointsResult).stance}</div>
                     {(cached.viewpoints as ViewpointsResult).viewpoints.map((v, i) => (
                         <div key={i} style={S.viewpoint}><span style={S.viewpointBullet}>{i + 1}.</span>{v}</div>
                     ))}
@@ -177,7 +179,7 @@ const ArticleAI: React.FC<Props> = ({ articleId }) => {
 
             {activeAction === "translate" && !cached.translate && !loading && !error && (
                 <div style={S.langRow}>
-                    <span style={{ fontSize: "13px", color: tokens.colorNeutralForeground3 }}>Target language:</span>
+                    <span style={{ fontSize: "13px", color: tokens.colorNeutralForeground3 }}>{t("ai.targetLanguage")}</span>
                     <Dropdown size="small" style={{ width: "120px" }} value={targetLang}
                         onOptionSelect={(_, d) => setTargetLang(d.optionValue ?? "中文")}
                         selectedOptions={[targetLang]}>
@@ -203,17 +205,20 @@ const Btn: React.FC<{
 
 const ResultPanel: React.FC<{
     title: string; onRegenerate: () => void; onDismiss: () => void; children: React.ReactNode
-}> = ({ title, onRegenerate, onDismiss, children }) => (
-    <div style={S.result}>
-        <div style={S.resultHeader}>
-            <span>{title}</span>
-            <div style={S.resultActions}>
-                <Button appearance="subtle" size="small" icon={<ArrowSyncRegular />} onClick={onRegenerate} title="Regenerate" />
-                <Button appearance="subtle" size="small" icon={<DismissRegular />} onClick={onDismiss} />
+}> = ({ title, onRegenerate, onDismiss, children }) => {
+    const { t } = useI18n()
+    return (
+        <div style={S.result}>
+            <div style={S.resultHeader}>
+                <span>{title}</span>
+                <div style={S.resultActions}>
+                    <Button appearance="subtle" size="small" icon={<ArrowSyncRegular />} onClick={onRegenerate} title={t("ai.regenerate")} />
+                    <Button appearance="subtle" size="small" icon={<DismissRegular />} onClick={onDismiss} />
+                </div>
             </div>
+            {children}
         </div>
-        {children}
-    </div>
-)
+    )
+}
 
 export default ArticleAI

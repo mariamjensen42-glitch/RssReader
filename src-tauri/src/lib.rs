@@ -5,15 +5,18 @@ mod ai;
 use database::{Database, FeedRow, ArticleRow, NewArticle, TagRow};
 use settings::SettingsStore;
 use ai::{ArticleInput, ViewpointsResult};
-use std::sync::Mutex;
-use tauri::Manager;
+use std::sync::{Arc, Mutex};
+use tauri::{Manager, WindowEvent};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
 use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_dialog::DialogExt;
 use chrono::Utc;
 use std::collections::HashMap;
 
 struct AppState {
     settings: Mutex<SettingsStore>,
-    db: Database,
+    db: Arc<Database>,
     rsshub_cache: Mutex<Option<(std::time::Instant, String)>>,
 }
 
@@ -175,27 +178,59 @@ fn refresh_feed(state: tauri::State<AppState>, id: i64) -> Result<String, String
 }
 
 #[tauri::command]
-fn refresh_all_feeds(state: tauri::State<AppState>, app: tauri::AppHandle) -> Result<String, String> {
+async fn refresh_all_feeds(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<String, String> {
     let proxy = get_proxy(&state);
     let feeds = state.db.get_feeds()?;
+    let db = state.db.clone();
+    // Limit concurrent HTTP fetches so hundreds of feeds refresh in parallel
+    // without exhausting sockets or getting rate-limited.
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
+
+    let mut tasks = Vec::new();
+    for feed in feeds {
+        // Acquire on the async side; the permit is moved into the task and released when it finishes.
+        let permit = sem.clone().acquire_owned().await.map_err(|e| format!("Semaphore error: {}", e))?;
+        let db = db.clone();
+        let proxy = proxy.clone();
+        let url = feed.url.clone();
+        let etag = feed.etag.clone();
+        let lm = feed.last_modified.clone();
+        let title = feed.title.clone();
+        let id = feed.id;
+        tasks.push(tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let result = refresh_feed_internal(&db, id, &url, &etag, &lm, proxy.as_deref());
+            (title, result)
+        }));
+    }
+
     let mut results = vec![];
     let mut new_total = 0i64;
     let mut ok_count = 0usize;
     let mut err_count = 0usize;
-    for feed in feeds {
-        match refresh_feed_internal(&state.db, feed.id, &feed.url, &feed.etag, &feed.last_modified, proxy.as_deref()) {
-            Ok((msg, new_count)) => { results.push(format!("{}: {}", feed.title, msg)); new_total += new_count; ok_count += 1; }
-            Err(e) if e == "304 Not Modified" => results.push(format!("{}: unchanged", feed.title)),
-            Err(e) => { results.push(format!("{}: Error - {}", feed.title, e)); err_count += 1; }
+    for task in tasks {
+        let (title, r) = task.await.map_err(|e| format!("Refresh task failed: {}", e))?;
+        match r {
+            Ok((msg, new_count)) => { results.push(format!("{}: {}", title, msg)); new_total += new_count; ok_count += 1; }
+            Err(e) if e == "304 Not Modified" => results.push(format!("{}: unchanged", title)),
+            Err(e) => { results.push(format!("{}: Error - {}", title, e)); err_count += 1; }
         }
     }
 
     // Desktop notification when the batch finishes (toggleable in Settings)
     let notify_on_refresh = { let s = state.settings.lock().unwrap(); s.get_notify_on_refresh() };
     if notify_on_refresh && (ok_count > 0 || err_count > 0) {
-        let body = format!("成功 {} 个订阅源，新增 {} 篇文章", ok_count, new_total);
-        let body = if err_count > 0 { format!("{}，失败 {} 个", body, err_count) } else { body };
-        let _ = app.notification().builder().title("订阅刷新完成").body(body).show();
+        let is_zh = { let s = state.settings.lock().unwrap(); s.get_locale().to_lowercase().starts_with("zh") };
+        let (title, body) = if is_zh {
+            let b = format!("成功 {} 个订阅源，新增 {} 篇文章", ok_count, new_total);
+            let b = if err_count > 0 { format!("{}，失败 {} 个", b, err_count) } else { b };
+            ("订阅刷新完成".to_string(), b)
+        } else {
+            let b = format!("{} feeds refreshed, {} new articles", ok_count, new_total);
+            let b = if err_count > 0 { format!("{}, {} failed", b, err_count) } else { b };
+            ("Refresh finished".to_string(), b)
+        };
+        let _ = app.notification().builder().title(title).body(body).show();
     }
 
     Ok(results.join("\n"))
@@ -320,7 +355,7 @@ fn discover_feeds(state: tauri::State<AppState>, website_url: String) -> Result<
     Ok(found)
 }
 
-// ─── Full-text extraction (Readability) ───
+// ─── Full-text extraction (Readability + fallback) ───
 
 /// Naive removal of `<tag ...>...</tag>` blocks (script/style/noscript/iframe).
 fn strip_blocks(mut html: String) -> String {
@@ -339,22 +374,26 @@ fn strip_blocks(mut html: String) -> String {
     html
 }
 
-#[tauri::command]
-fn fetch_full_text(state: tauri::State<AppState>, article_id: i64, url: String) -> Result<String, String> {
-    let proxy = get_proxy(&state);
-    let client = build_client(proxy.as_deref(), 20)?;
-    let resp = client.get(&url).send().map_err(|e| format!("HTTP error: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {} while fetching the article page", resp.status()));
+/// Primary path: Mozilla Readability algorithm (readable-readability).
+/// Strips navigation, sidebars, ads and other boilerplate, keeping the main article.
+fn extract_readable(html: &str, url: &str) -> Result<String, String> {
+    let base = url::Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
+    let mut readability = readable_readability::Readability::new();
+    readability.base_url(base);
+    let (tree, _meta) = readability.parse(html);
+    let content = tree.to_string();
+    if content.trim().is_empty() {
+        return Err("Readability returned empty content".into());
     }
-    let html = resp.text().map_err(|e| e.to_string())?;
-    let doc = scraper::Html::parse_document(&html);
+    Ok(content)
+}
 
-    // 1) Prefer <article> or <main>
+/// Fallback: pick `<article>/<main>` or the element containing the most text.
+fn extract_fallback(html: &str) -> Result<String, String> {
+    let doc = scraper::Html::parse_document(html);
     let article_sel = scraper::Selector::parse("article, main").map_err(|e| e.to_string())?;
     let mut body = doc.select(&article_sel).next().map(|el| el.inner_html());
 
-    // 2) Fallback: the element containing the most text
     if body.as_deref().map_or(true, |h| h.trim().is_empty()) {
         let container_sel = scraper::Selector::parse("div, section").map_err(|e| e.to_string())?;
         let mut best: Option<(String, usize)> = None;
@@ -368,6 +407,40 @@ fn fetch_full_text(state: tauri::State<AppState>, article_id: i64, url: String) 
     }
 
     let full = strip_blocks(body.unwrap_or_default()).trim().to_string();
+    if full.is_empty() {
+        return Err("Could not extract readable content from the page".into());
+    }
+    Ok(full)
+}
+
+#[tauri::command]
+fn fetch_full_text(state: tauri::State<AppState>, article_id: i64, url: String) -> Result<String, String> {
+    let proxy = get_proxy(&state);
+    let client = build_client(proxy.as_deref(), 20)?;
+    let resp = client.get(&url).send().map_err(|e| format!("HTTP error: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {} while fetching the article page", resp.status()));
+    }
+    // Use the final URL (after redirects) so relative image/link URLs resolve correctly
+    let final_url = resp.url().clone();
+    let html = resp.text().map_err(|e| e.to_string())?;
+
+    // Readability first (removes ads/nav/boilerplate); fall back to the old heuristic.
+    // Log the underlying errors so extraction failures are diagnosable.
+    let cleaned = match extract_readable(&html, final_url.as_str()) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("readability extraction failed for {}: {}", url, e);
+            match extract_fallback(&html) {
+                Ok(c) => c,
+                Err(e2) => {
+                    eprintln!("fallback extraction failed for {}: {}", url, e2);
+                    String::new()
+                }
+            }
+        }
+    };
+    let full = strip_blocks(cleaned).trim().to_string();
     if full.is_empty() {
         return Err("Could not extract readable content from the page".into());
     }
@@ -415,10 +488,8 @@ fn fetch_rsshub_routes(state: tauri::State<AppState>, instance: String) -> Resul
 
 // ─── Article Export ───
 
-#[tauri::command]
-fn export_article(state: tauri::State<AppState>, id: i64, format: String) -> Result<String, String> {
-    let article = state.db.get_article_by_id(id)?.ok_or("Article not found")?;
-    match format.as_str() {
+fn render_article_export(article: &ArticleRow, format: &str) -> Result<String, String> {
+    match format {
         "md" => Ok(format!(
             "# {}\n\n**Source:** {}  \n**Author:** {}  \n**Date:** {}  \n**Link:** {}\n\n---\n\n{}\n",
             article.title, article.feed_title, article.author, article.pub_date, article.link,
@@ -430,6 +501,41 @@ fn export_article(state: tauri::State<AppState>, id: i64, format: String) -> Res
         )),
         _ => Err("Unsupported format. Use 'md' or 'html'".into()),
     }
+}
+
+#[tauri::command]
+fn export_article(state: tauri::State<AppState>, id: i64, format: String) -> Result<String, String> {
+    let article = state.db.get_article_by_id(id)?.ok_or("Article not found")?;
+    render_article_export(&article, &format)
+}
+
+/// Opens a native save dialog (path chosen by the user) and writes the exported
+/// article there. The path never comes from the frontend, so it cannot be abused
+/// to write to arbitrary locations.
+#[tauri::command]
+async fn export_article_dialog(app: tauri::AppHandle, state: tauri::State<'_, AppState>, id: i64, format: String) -> Result<String, String> {
+    let article = state.db.get_article_by_id(id)?.ok_or("Article not found")?;
+    let content = render_article_export(&article, &format)?;
+    let ext = if format == "md" { "md" } else { "html" };
+    let suggested = format!("{}.{}",
+        article.title.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').take(50).collect::<String>(),
+        ext);
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
+    app.dialog().file()
+        .set_file_name(&suggested)
+        .add_filter(if ext == "md" { "Markdown" } else { "HTML" }, &[ext])
+        .save_file(move |path| { let _ = tx.send(path); });
+
+    let chosen = rx.await.map_err(|_| "Save dialog closed unexpectedly".to_string())?;
+    let Some(path) = chosen else { return Ok(String::new()) };  // user cancelled
+    let path = path.into_path().map_err(|e| format!("Invalid save path: {}", e))?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+    std::fs::write(&path, content).map_err(|e| format!("Failed to write file: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 // ─── OPML Import/Export ───
@@ -484,15 +590,13 @@ fn flatten_outlines(outlines: &[OpmlOutline], group: &str) -> Vec<(String, Strin
 }
 
 #[tauri::command]
-fn import_opml(state: tauri::State<AppState>, content: String) -> Result<String, String> {
+fn import_opml(state: tauri::State<AppState>, content: String) -> Result<(i64, i64), String> {
     let opml: Opml = quick_xml::de::from_str(&content).map_err(|e| format!("OPML parse error: {}", e))?;
     let feeds = flatten_outlines(&opml.body.outlines, "");
-    let mut added = 0u32;
-    for (name, url, group) in &feeds {
-        if state.db.add_feed(name, url, group).is_ok() { added += 1; }
-        // skip duplicates silently
-    }
-    Ok(format!("Imported {} feeds ({} skipped as duplicates)", added, feeds.len() - added as usize))
+    // Batch insert in one transaction (fast for hundreds of feeds) and skip duplicates by URL
+    let added = state.db.add_feeds_batch(&feeds)?;
+    let skipped = feeds.len() as i64 - added as i64;
+    Ok((added as i64, skipped))
 }
 
 #[tauri::command]
@@ -545,6 +649,10 @@ fn mark_read(state: tauri::State<AppState>, id: i64, read: bool) -> Result<(), S
 fn mark_all_read(state: tauri::State<AppState>, feed_id: Option<i64>) -> Result<(), String> { state.db.mark_all_read(feed_id) }
 #[tauri::command]
 fn toggle_star(state: tauri::State<AppState>, id: i64) -> Result<bool, String> { state.db.toggle_star(id) }
+#[tauri::command]
+fn delete_article(state: tauri::State<AppState>, id: i64) -> Result<(), String> { state.db.delete_article(id) }
+#[tauri::command]
+fn clear_read_articles(state: tauri::State<AppState>) -> Result<i64, String> { state.db.delete_read_articles() }
 #[tauri::command]
 fn search_articles(state: tauri::State<AppState>, query: String, limit: Option<i64>) -> Result<Vec<ArticleRow>, String> {
     state.db.search_articles(&query, limit.unwrap_or(50))
@@ -609,6 +717,7 @@ s_get!(get_search_engine, u8, get_search_engine); s_set!(set_search_engine, u8, 
 s_get!(get_proxy_enabled, bool, get_proxy_enabled); s_set!(set_proxy_enabled, bool, set_proxy_enabled, v);
 s_get!(get_proxy_address, String, get_proxy_address); s_set!(set_proxy_address, String, set_proxy_address, v);
 s_get!(get_notify_on_refresh, bool, get_notify_on_refresh); s_set!(set_notify_on_refresh, bool, set_notify_on_refresh, v);
+s_get!(get_minimize_to_tray, bool, get_minimize_to_tray); s_set!(set_minimize_to_tray, bool, set_minimize_to_tray, v);
 s_get!(get_filter_type, u32, get_filter_type); s_set!(set_filter_type, u32, set_filter_type, v);
 s_get!(get_list_view_configs, u8, get_list_view_configs); s_set!(set_list_view_configs, u8, set_list_view_configs, v);
 s_get!(get_nedb_status, bool, get_nedb_status); s_set!(set_nedb_status, bool, set_nedb_status, v);
@@ -628,7 +737,48 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            app.manage(AppState { settings: Mutex::new(SettingsStore::new()), db: Database::new().map_err(std::io::Error::other)?, rsshub_cache: Mutex::new(None) });
+            app.manage(AppState { settings: Mutex::new(SettingsStore::new()), db: Arc::new(Database::new().map_err(std::io::Error::other)?), rsshub_cache: Mutex::new(None) });
+
+            // System tray: toggle window on click, Quit from the menu
+            let show_item = MenuItemBuilder::with_id("show", "Show/Hide").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            let tray_menu = MenuBuilder::new(app)
+                .item(&show_item)
+                .separator()
+                .item(&quit_item)
+                .build()?;
+
+            let mut tray = TrayIconBuilder::with_id("main-tray")
+                .tooltip("Rust RSS Reader")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            if w.is_visible().unwrap_or(false) { let _ = w.hide(); }
+                            else { let _ = w.show(); let _ = w.set_focus(); }
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            if w.is_visible().unwrap_or(false) { let _ = w.hide(); }
+                            else { let _ = w.show(); let _ = w.set_focus(); }
+                        }
+                    }
+                });
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            // Tray may be unavailable (e.g. Linux without a StatusNotifier host);
+            // the app must still start, so a failure here is only logged.
+            if let Err(e) = tray.build(app) {
+                eprintln!("System tray unavailable: {}", e);
+            }
 
             // Show main window after WebView has time to load its content
             let main = app.get_webview_window("main").unwrap();
@@ -639,17 +789,34 @@ pub fn run() {
 
             Ok(())
         })
+        .on_window_event(|window, event| {
+            // Close button → hide to tray instead of quitting (toggleable in Settings).
+            // Only hides when a tray icon is actually present, otherwise the window
+            // would become unrecoverable.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    let state = window.state::<AppState>();
+                    let minimize = state.settings.lock().map(|s| s.get_minimize_to_tray()).unwrap_or(false);
+                    let tray_ok = window.app_handle().tray_by_id("main-tray").is_some();
+                    if minimize && tray_ok {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             greet, should_use_dark_colors, get_platform, get_version,
             add_feed, remove_feed, update_feed, list_feeds, refresh_feed, refresh_all_feeds,
-            discover_feeds, import_opml, export_opml, export_article, fetch_full_text, fetch_rsshub_routes,
-            get_articles, get_article, mark_read, mark_all_read, toggle_star, search_articles,
+            discover_feeds, import_opml, export_opml, export_article, export_article_dialog, fetch_full_text, fetch_rsshub_routes,
+            get_articles, get_article, mark_read, mark_all_read, toggle_star, delete_article, clear_read_articles, search_articles,
             add_tag, remove_tag, get_article_tags, get_articles_tags, get_all_tags, get_articles_by_tag,
             get_theme, set_theme, get_menu, set_menu, get_view, set_view, get_locale, set_locale,
             get_font_size, set_font_size, get_font_family, set_font_family,
             get_fetch_interval, set_fetch_interval, get_search_engine, set_search_engine,
             get_proxy_enabled, set_proxy_enabled, get_proxy_address, set_proxy_address,
             get_notify_on_refresh, set_notify_on_refresh,
+            get_minimize_to_tray, set_minimize_to_tray,
             get_filter_type, set_filter_type, get_list_view_configs, set_list_view_configs,
             get_nedb_status, set_nedb_status, get_unread_sources_only, set_unread_sources_only,
             get_source_groups, set_source_groups, get_service_configs, set_service_configs,
@@ -763,4 +930,41 @@ async fn extract_viewpoints(
     };
 
     ai::extract_viewpoints(&api_key, &model, &input).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readability_strips_ads_nav_and_scripts() {
+        let html = r#"<!DOCTYPE html><html><head><title>Test</title></head><body>
+            <nav>Navigation menu links here</nav>
+            <div class="ad-banner">Buy our product now!</div>
+            <article><h1>Article Title</h1><p>This is the real article content with useful information.</p><p>Second paragraph of the article body text.</p></article>
+            <aside>Related links and ads</aside>
+            <script>alert('xss')</script>
+        </body></html>"#;
+        let cleaned = extract_readable(html, "https://example.com/post").unwrap();
+        assert!(cleaned.contains("real article content"), "main content kept");
+        assert!(cleaned.contains("Second paragraph"), "second paragraph kept");
+        assert!(!cleaned.contains("Buy our product"), "ad removed");
+        assert!(!cleaned.contains("Navigation menu"), "nav removed");
+        assert!(!cleaned.contains("Related links"), "aside removed");
+        assert!(!cleaned.contains("<script"), "script removed");
+    }
+
+    #[test]
+    fn extract_fallback_picks_largest_text_block() {
+        // No <article>/<main>: the fallback picks the largest text block.
+        let body = "Some actual article body with plenty of words. ".repeat(10);
+        let html = format!(r#"<!DOCTYPE html><html><body>
+            <div class="header">Site header</div>
+            <div class="content"><p>{body}</p><p>More words here to reach the minimum length threshold for the heuristic.</p><p>Even more content so the heuristic selects this block and skips the footer.</p></div>
+            <div class="footer">Footer links</div>
+        </body></html>"#);
+        let cleaned = extract_fallback(&html).unwrap();
+        assert!(cleaned.contains("actual article body"), "fallback picked main content");
+        assert!(!cleaned.contains("Footer links"), "footer excluded");
+    }
 }

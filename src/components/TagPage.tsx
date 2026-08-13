@@ -1,11 +1,12 @@
 import * as React from "react"
 import { useAppStore } from "../store"
+import { useI18n } from "../i18n"
 import { tokens, Button, Input } from "@fluentui/react-components"
 import { TagRegular, DismissRegular } from "@fluentui/react-icons"
 
 const S = {
     page: {
-        padding: "24px 32px", height: "100%", overflowY: "auto" as const,
+        padding: "24px 32px",
         maxWidth: "800px", margin: "0 auto",
     } as React.CSSProperties,
     header: {
@@ -38,6 +39,7 @@ const TagPage: React.FC = () => {
     const tags = useAppStore(s => s.tags)
     const tagId = useAppStore(s => s.tagId)
     const selectTag = useAppStore(s => s.selectTag)
+    const { t } = useI18n()
     const [search, setSearch] = React.useState("")
 
     const filtered = React.useMemo(() => {
@@ -51,16 +53,16 @@ const TagPage: React.FC = () => {
         <div style={S.page}>
             <div style={S.header}>
                 <TagRegular fontSize={22} />
-                <span style={S.title}>Tags</span>
+                <span style={S.title}>{t("tags.title")}</span>
                 <span style={{ fontSize: "13px", color: tokens.colorNeutralForeground4 }}>
-                    {tags.length} total
+                    {t("tags.total", { count: tags.length })}
                 </span>
             </div>
 
             {tags.length > 0 && (
                 <div style={S.search}>
                     <Input
-                        placeholder="Filter tags..."
+                        placeholder={t("tags.filter")}
                         value={search}
                         onChange={(_, d) => setSearch(d.value)}
                     />
@@ -70,13 +72,13 @@ const TagPage: React.FC = () => {
             {tags.length === 0 && (
                 <div style={S.empty}>
                     <TagRegular fontSize={36} opacity={0.3} />
-                    <div>No tags yet. Use Auto Tags in any article to get started.</div>
+                    <div>{t("tags.empty")}</div>
                 </div>
             )}
 
             {tags.length > 0 && filtered.length === 0 && (
                 <div style={S.empty}>
-                    <div>No tags match "{search}"</div>
+                    <div>{t("tags.noMatch", { query: search })}</div>
                 </div>
             )}
 

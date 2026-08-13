@@ -13,7 +13,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
+tokio = { version = "1", features = ["sync"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
@@ -28,6 +29,7 @@ url = "2"
 quick-xml = { version = "0.36", features = ["serialize"] }
 tauri-plugin-notification = "2"
 encoding_rs = "0.8"
+readable-readability = "0.4.0"
 
 [lints.rust]
 unsafe_code = "forbid"

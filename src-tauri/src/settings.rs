@@ -21,6 +21,8 @@ pub struct AppSettings {
     pub proxy_enabled: bool,
     #[serde(default = "default_true")]
     pub notify_on_refresh: bool,
+    #[serde(default = "default_true")]
+    pub minimize_to_tray: bool,
     pub service_configs: serde_json::Value,
     pub deepseek_api_key: String,
     pub deepseek_model: String,
@@ -45,6 +47,7 @@ impl Default for AppSettings {
             proxy_address: String::new(),
             proxy_enabled: false,
             notify_on_refresh: true,
+            minimize_to_tray: true,
             service_configs: serde_json::json!({"type": 0}),
             deepseek_api_key: String::new(),
             deepseek_model: "deepseek-chat".to_string(),
@@ -109,6 +112,9 @@ impl SettingsStore {
 
     pub fn get_notify_on_refresh(&self) -> bool { self.data.notify_on_refresh }
     pub fn set_notify_on_refresh(&mut self, v: bool) { self.data.notify_on_refresh = v; self.save(); }
+
+    pub fn get_minimize_to_tray(&self) -> bool { self.data.minimize_to_tray }
+    pub fn set_minimize_to_tray(&mut self, v: bool) { self.data.minimize_to_tray = v; self.save(); }
 
     pub fn get_filter_type(&self) -> u32 { self.data.filter_type }
     pub fn set_filter_type(&mut self, v: u32) { self.data.filter_type = v; self.save(); }

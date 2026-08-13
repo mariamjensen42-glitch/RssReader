@@ -29,4 +29,9 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+  // 4. do not auto-empty the outDir on build (avoids recursive deletes that can be
+  //    blocked by sandbox/trash tooling; stale hashed assets are harmless)
+  build: {
+    emptyOutDir: false,
+  },
 }));

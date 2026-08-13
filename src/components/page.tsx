@@ -318,6 +318,38 @@ const Page: React.FC = () => {
         }
     }, [feedId])
 
+    // Global keyboard shortcuts: j/k prev/next, m mark read, s star, r refresh
+    useEffect(() => {
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.isComposing) return
+            const t = e.target as HTMLElement | null
+            if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return
+
+            const st = useAppStore.getState()
+            if (st.settingsDisplay || st.showTagsPage || st.searchOn) return
+
+            const key = e.key.toLowerCase()
+            if (key === "j" || key === "k") {
+                const idx = st.articles.findIndex(a => a.id === st.itemId)
+                let next = -1
+                if (idx === -1) next = key === "j" ? 0 : st.articles.length - 1
+                else next = key === "j" ? Math.min(idx + 1, st.articles.length - 1) : Math.max(idx - 1, 0)
+                const target = st.articles[next]
+                if (target) st.selectArticle(target.id)
+                e.preventDefault()
+            } else if (key === "m" && st.itemId) {
+                const a = st.articles.find(x => x.id === st.itemId)
+                if (a) st.markRead(a.id, a.is_read !== 1)
+            } else if (key === "s" && st.itemId) {
+                st.toggleStar(st.itemId)
+            } else if (key === "r") {
+                st.refreshAll()
+            }
+        }
+        document.addEventListener("keydown", onKeyDown)
+        return () => document.removeEventListener("keydown", onKeyDown)
+    }, [])
+
     const handleArticleSelect = (id: number) => {
         if (mainRef.current && itemId !== null) {
             scrollPositions.current[itemId] = mainRef.current.scrollTop

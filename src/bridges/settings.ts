@@ -14,6 +14,9 @@ export const settingsBridge = {
     getProxy: (): Promise<string> => invoke("get_proxy_address"),
     setProxy: (address: string) => invoke("set_proxy_address", { v: address }),
 
+    getNotifyOnRefresh: (): Promise<boolean> => invoke("get_notify_on_refresh"),
+    setNotifyOnRefresh: (flag: boolean) => invoke("set_notify_on_refresh", { v: flag }),
+
     getDefaultView: (): Promise<ViewType> => invoke("get_view"),
     setDefaultView: (viewType: ViewType) => invoke("set_view", { v: viewType }),
 

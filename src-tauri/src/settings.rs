@@ -19,6 +19,8 @@ pub struct AppSettings {
     pub source_groups: serde_json::Value,
     pub proxy_address: String,
     pub proxy_enabled: bool,
+    #[serde(default = "default_true")]
+    pub notify_on_refresh: bool,
     pub service_configs: serde_json::Value,
     pub deepseek_api_key: String,
     pub deepseek_model: String,
@@ -42,6 +44,7 @@ impl Default for AppSettings {
             source_groups: serde_json::Value::Array(vec![]),
             proxy_address: String::new(),
             proxy_enabled: false,
+            notify_on_refresh: true,
             service_configs: serde_json::json!({"type": 0}),
             deepseek_api_key: String::new(),
             deepseek_model: "deepseek-chat".to_string(),
@@ -104,6 +107,9 @@ impl SettingsStore {
     pub fn get_proxy_address(&self) -> String { self.data.proxy_address.clone() }
     pub fn set_proxy_address(&mut self, v: String) { self.data.proxy_address = v; self.save(); }
 
+    pub fn get_notify_on_refresh(&self) -> bool { self.data.notify_on_refresh }
+    pub fn set_notify_on_refresh(&mut self, v: bool) { self.data.notify_on_refresh = v; self.save(); }
+
     pub fn get_filter_type(&self) -> u32 { self.data.filter_type }
     pub fn set_filter_type(&mut self, v: u32) { self.data.filter_type = v; self.save(); }
 
@@ -137,6 +143,8 @@ impl SettingsStore {
         Ok(())
     }
 }
+
+fn default_true() -> bool { true }
 
 fn get_settings_path() -> PathBuf {
     let dir = dirs::config_dir()

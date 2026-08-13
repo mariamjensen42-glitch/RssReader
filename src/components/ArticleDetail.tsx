@@ -1,7 +1,7 @@
 import * as React from "react"
 import { useAppStore } from "../store"
 import { tokens, Button, Input } from "@fluentui/react-components"
-import { Star20Regular, Star20Filled, OpenRegular, CheckmarkCircleRegular, ArrowDownloadRegular, DismissRegular, AddRegular } from "@fluentui/react-icons"
+import { Star20Regular, Star20Filled, OpenRegular, CheckmarkCircleRegular, ArrowDownloadRegular, DismissRegular, AddRegular, DocumentTextRegular } from "@fluentui/react-icons"
 import type { ArticleRow } from "../bridges/feeds"
 import ArticleAI from "./ArticleAI"
 
@@ -49,6 +49,9 @@ const ArticleDetail: React.FC<Props> = ({ article }) => {
     const hasMarkedRead = React.useRef(false)
     const [tagInput, setTagInput] = React.useState("")
     const [showTagInput, setShowTagInput] = React.useState(false)
+    const [fullText, setFullText] = React.useState<string | null>(null)
+    const [extracting, setExtracting] = React.useState(false)
+    const [extractError, setExtractError] = React.useState("")
 
     // Load tags when article changes
     React.useEffect(() => {
@@ -56,6 +59,8 @@ const ArticleDetail: React.FC<Props> = ({ article }) => {
         loadArticleTags(article.id)
         setTagInput("")
         setShowTagInput(false)
+        setFullText(null)
+        setExtractError("")
     }, [article?.id])
 
     // Scroll-to-bottom → auto mark read
@@ -96,6 +101,20 @@ const ArticleDetail: React.FC<Props> = ({ article }) => {
         if (!name) return
         addTag(article.id, name)
         setTagInput("")
+    }
+
+    const handleExtractFullText = async () => {
+        if (!article.link || extracting) return
+        setExtracting(true)
+        setExtractError("")
+        try {
+            const full = await window.feeds.fetchFullText(article.id, article.link)
+            setFullText(full)
+        } catch (e) {
+            setExtractError(typeof e === "string" ? e : "Failed to extract full text")
+        } finally {
+            setExtracting(false)
+        }
     }
 
     return (
@@ -144,6 +163,9 @@ const ArticleDetail: React.FC<Props> = ({ article }) => {
                     onClick={() => toggleStar(article.id)}>Star</Button>
                 <Button appearance="subtle" size="small" icon={<OpenRegular />}
                     onClick={() => article.link && window.utils.openExternal(article.link)}>Original</Button>
+                <Button appearance="subtle" size="small" icon={<DocumentTextRegular />}
+                    onClick={handleExtractFullText}
+                    disabled={!article.link || extracting}>{extracting ? "Extracting..." : "Full Text"}</Button>
                 <div style={{ flex: 1 }} />
                 <Button appearance="subtle" size="small" icon={<ArrowDownloadRegular />}
                     onClick={() => handleExport('md')}>MD</Button>
@@ -151,8 +173,11 @@ const ArticleDetail: React.FC<Props> = ({ article }) => {
                     onClick={() => handleExport('html')}>HTML</Button>
             </div>
             <ArticleAI articleId={article.id} />
+            {extractError && (
+                <div style={{ fontSize: "12px", color: "#d32f2f", margin: "0 0 10px" }}>Full text extraction failed: {extractError}</div>
+            )}
             <div className="article-content" style={S.content} ref={contentRef}
-                dangerouslySetInnerHTML={{ __html: article.content || article.summary || "" }} />
+                dangerouslySetInnerHTML={{ __html: fullText ?? (article.content || article.summary || "") }} />
         </div>
     )
 }

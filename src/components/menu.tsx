@@ -36,6 +36,11 @@ const S: Record<string, React.CSSProperties> = {
         backgroundColor: tokens.colorBrandBackground2, color: tokens.colorBrandForeground1,
         flexShrink: 0, minWidth: "18px", textAlign: "center" as const,
     },
+    errorBadge: {
+        fontSize: "10px", fontWeight: 600, padding: "1px 5px", borderRadius: "8px",
+        backgroundColor: "#d32f2f22", color: "#d32f2f",
+        flexShrink: 0, minWidth: "16px", textAlign: "center" as const,
+    },
     count: { fontSize: "11px", color: tokens.colorNeutralForeground4, flexShrink: 0 },
     empty: { fontSize: "12px", color: tokens.colorNeutralForeground4, padding: "4px 16px", userSelect: "none" as const },
     groupLabel: { fontSize: "12px", fontWeight: 500, color: tokens.colorNeutralForeground2, padding: "4px 16px", userSelect: "none" as const, cursor: "default" },
@@ -55,9 +60,9 @@ const S: Record<string, React.CSSProperties> = {
 
 const SidebarItem: React.FC<{
     label: string; active?: boolean; icon?: React.ReactNode;
-    badge?: React.ReactNode; count?: string; indent?: boolean;
+    badge?: React.ReactNode; count?: string; indent?: boolean; error?: number;
     onClick: () => void; onContextMenu?: (e: React.MouseEvent) => void;
-}> = ({ label, active, icon, badge, count, indent, onClick, onContextMenu }) => {
+}> = ({ label, active, icon, badge, count, indent, error, onClick, onContextMenu }) => {
     const [hover, setHover] = React.useState(false)
     return (
         <div
@@ -75,6 +80,9 @@ const SidebarItem: React.FC<{
             {icon}
             <span style={S.itemLabel}>{label}</span>
             {count && <span style={S.count}>{count}</span>}
+            {error ? (
+                <span style={S.errorBadge} title={`${error} failed refresh${error > 1 ? "es" : ""}`}>!{error}</span>
+            ) : null}
             {badge}
         </div>
     )
@@ -195,6 +203,7 @@ export const Menu: React.FC = () => {
                                     label={feed.title || feed.url}
                                     active={feedId === feed.id}
                                     indent={!!group}
+                                    error={feed.error_count > 0 ? feed.error_count : undefined}
                                     badge={feed.unread_count > 0
                                         ? <span style={S.badge}>{feed.unread_count}</span>
                                         : undefined}

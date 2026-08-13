@@ -2,7 +2,7 @@ import * as React from "react"
 import { useEffect, useState } from "react"
 import { useAppStore } from "../store"
 import { ThemeSettings } from "../schema-types"
-import { Select, RadioGroup, Radio, Button, Input, Switch, Slider, tokens } from "@fluentui/react-components"
+import { Select, RadioGroup, Radio, Button, Input, Switch, Slider, Spinner, tokens } from "@fluentui/react-components"
 import { ArrowLeftRegular, DismissRegular, AddRegular, ArrowSyncRegular, SearchRegular, FolderRegular } from "@fluentui/react-icons"
 
 // ═══ Styles ═══
@@ -252,6 +252,7 @@ const GeneralTab: React.FC = () => {
     const [fontSize, setFontSize] = useState(16)
     const [proxyEnabled, setProxyEnabled] = useState(false)
     const [proxyUrl, setProxyUrl] = useState("")
+    const [notifyOnRefresh, setNotifyOnRefresh] = useState(true)
 
     useEffect(() => {
         window.settings.getThemeSettings().then(setTheme)
@@ -260,6 +261,7 @@ const GeneralTab: React.FC = () => {
         window.settings.getFontSize().then(v => setFontSize(v))
         window.settings.getProxyStatus().then(setProxyEnabled)
         window.settings.getProxy().then(setProxyUrl)
+        window.settings.getNotifyOnRefresh().then(setNotifyOnRefresh)
     }, [])
 
     return (
@@ -303,6 +305,12 @@ const GeneralTab: React.FC = () => {
                     {fetchIntervals.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </Select>
             </div>
+            <div style={S.field}>
+                <div style={S.label}>Refresh Notifications</div>
+                <Switch checked={notifyOnRefresh} label={notifyOnRefresh ? "On" : "Off"}
+                    onChange={(_, d) => { setNotifyOnRefresh(d.checked); window.settings.setNotifyOnRefresh(d.checked) }} />
+                <div style={S.hint}>Notify when a feed refresh batch finishes</div>
+            </div>
 
             <div style={{ ...S.sectionTitle, marginTop: "32px" }}>Network</div>
             <div style={S.field}>
@@ -316,6 +324,195 @@ const GeneralTab: React.FC = () => {
                     </div>
                 )}
             </div>
+        </>
+    )
+}
+
+// ═══ RSSHub Tab ═══
+interface RssRoute { path: string; name?: string; docs?: string; parameters?: Record<string, string> }
+interface RssSite { routes: RssRoute[] }
+
+const RssHubTab: React.FC = () => {
+    const addFeed = useAppStore(s => s.addFeed)
+    const [instance, setInstance] = useState("https://rsshub.app")
+    const [sites, setSites] = useState<Record<string, RssSite>>({})
+    const [loading, setLoading] = useState(false)
+    const [error, setError] = useState("")
+    const [search, setSearch] = useState("")
+    const [expandedSites, setExpandedSites] = useState<Set<string>>(new Set())
+    const [expandedRoute, setExpandedRoute] = useState<string | null>(null)
+    const [paramVals, setParamVals] = useState<Record<string, string>>({})
+    const [addedMsg, setAddedMsg] = useState("")
+
+    const loadRoutes = async () => {
+        if (!instance.trim()) return
+        setLoading(true); setError(""); setAddedMsg("")
+        try {
+            const text = await window.rsshub.fetchRoutes(instance.trim())
+            const data = JSON.parse(text).data
+            const norm: Record<string, RssSite> = {}
+            for (const [site, info] of Object.entries<unknown>(data)) {
+                const rec = info as { routes?: unknown; name?: string }
+                const raw = Array.isArray(info) ? info : (rec?.routes ?? [])
+                norm[site] = {
+                    routes: (raw as unknown[]).map(r => typeof r === "string" ? { path: r as string } : r as RssRoute),
+                }
+            }
+            setSites(norm)
+        } catch (e) { setError(String(e)) }
+        setLoading(false)
+    }
+
+    const siteEntries = React.useMemo(() => {
+        const q = search.trim().toLowerCase()
+        const entries = Object.entries(sites)
+        if (!q) return entries
+        return entries.filter(([site, s]) =>
+            site.toLowerCase().includes(q) ||
+            s.routes.some(r => r.path.toLowerCase().includes(q) || (r.name ?? "").toLowerCase().includes(q))
+        )
+    }, [sites, search])
+
+    const routeParams = (path: string): string[] => {
+        const names: string[] = []
+        const re = /:([a-zA-Z0-9_]+)\??/g
+        let m: RegExpExecArray | null
+        while ((m = re.exec(path))) if (!names.includes(m[1])) names.push(m[1])
+        return names
+    }
+
+    const buildUrl = (path: string): string => {
+        let url = `${instance.trim().replace(/\/+$/, "")}${path}`
+        for (const [k, v] of Object.entries(paramVals)) {
+            if (v) url = url.replace(new RegExp(`:${k}\\??`, "g"), encodeURIComponent(v))
+        }
+        return url
+    }
+
+    const toggleSite = (site: string) => {
+        setExpandedSites(prev => {
+            const next = new Set(prev)
+            if (next.has(site)) next.delete(site); else next.add(site)
+            return next
+        })
+    }
+
+    const toggleRoute = (path: string) => {
+        if (expandedRoute === path) { setExpandedRoute(null); return }
+        setExpandedRoute(path)
+        const vals: Record<string, string> = {}
+        for (const p of routeParams(path)) vals[p] = ""
+        setParamVals(vals)
+    }
+
+    const handleAdd = async (path: string) => {
+        const url = buildUrl(path)
+        if (url.includes(":")) { setError("Please fill in all required parameters (marked with a *)"); return }
+        setError(""); setAddedMsg("")
+        try {
+            await addFeed(url, "RSSHub")
+            setAddedMsg(`Added: ${url}`)
+            setExpandedRoute(null)
+        } catch (e) { setError(String(e)) }
+    }
+
+    const totalRoutes = React.useMemo(() =>
+        Object.values(sites).reduce((n, s) => n + s.routes.length, 0), [sites])
+
+    return (
+        <>
+            <div style={S.sectionTitle}>RSSHub</div>
+            <div style={S.hint}>Browse RSSHub routes and subscribe with one click. 3000+ feeds across hundreds of sites.</div>
+
+            <div style={{ ...S.row, margin: "12px 0" }}>
+                <Input style={{ flex: 1 }} placeholder="RSSHub instance, e.g. https://rsshub.app"
+                    value={instance} onChange={(_, d) => setInstance(d.value)} />
+                <Button appearance="primary" icon={<ArrowSyncRegular />} onClick={loadRoutes}
+                    disabled={loading || !instance.trim()}>{loading ? "Loading..." : "Load Routes"}</Button>
+            </div>
+
+            {error && <div style={{ fontSize: "12px", color: "#d32f2f", margin: "4px 0 10px" }}>{error}</div>}
+            {addedMsg && <div style={{ fontSize: "12px", color: "#2e7d32", margin: "4px 0 10px" }}>{addedMsg}</div>}
+
+            {Object.keys(sites).length > 0 && (
+                <>
+                    <div style={{ ...S.row, margin: "14px 0 10px" }}>
+                        <Input style={{ flex: 1 }} placeholder="Search routes (site name or path)..." contentBefore={<SearchRegular />}
+                            value={search} onChange={(_, d) => setSearch(d.value)} />
+                        <span style={{ fontSize: "12px", color: tokens.colorNeutralForeground4 }}>
+                            {siteEntries.length} sites · {totalRoutes} routes
+                        </span>
+                    </div>
+
+                    {siteEntries.length === 0 && <div style={S.hint}>No routes match your search.</div>}
+
+                    {siteEntries.map(([site, s]) => {
+                        const isOpen = expandedSites.has(site)
+                        return (
+                            <div key={site} style={{ marginBottom: "2px" }}>
+                                <div style={{
+                                    display: "flex", alignItems: "center", gap: "8px", padding: "8px 10px",
+                                    cursor: "pointer", borderRadius: "4px", fontSize: "13px", fontWeight: 600,
+                                    color: tokens.colorNeutralForeground1, backgroundColor: "var(--neutralLayer1)",
+                                    border: "1px solid var(--neutralLayer3)",
+                                }} onClick={() => toggleSite(site)}>
+                                    <FolderRegular fontSize={14} style={{ color: tokens.colorNeutralForeground3 }} />
+                                    <span style={{ flex: 1 }}>{site}</span>
+                                    <span style={{ fontSize: "11px", color: tokens.colorNeutralForeground4 }}>{s.routes.length}</span>
+                                    <span style={{ fontSize: "11px", transform: isOpen ? "rotate(90deg)" : undefined, transition: "transform 0.1s" }}>›</span>
+                                </div>
+
+                                {isOpen && (
+                                    <div style={{ padding: "2px 0 6px 12px" }}>
+                                        {s.routes.map(r => {
+                                            const ps = routeParams(r.path)
+                                            const isRouteOpen = expandedRoute === r.path
+                                            const url = buildUrl(r.path)
+                                            return (
+                                                <div key={r.path} style={{ borderBottom: "1px solid var(--neutralLayer3)" }}>
+                                                    <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "7px 8px", cursor: "pointer" }}
+                                                        onClick={() => toggleRoute(r.path)}>
+                                                        <span style={{ fontSize: "12px", color: tokens.colorNeutralForeground2, flex: 1, fontFamily: "monospace" }}>{r.path}</span>
+                                                        {r.name && <span style={{ fontSize: "11px", color: tokens.colorNeutralForeground4 }}>{r.name}</span>}
+                                                    </div>
+                                                    {isRouteOpen && (
+                                                        <div style={{ padding: "0 8px 10px 8px" }}>
+                                                            {r.docs && <div style={{ fontSize: "12px", color: tokens.colorNeutralForeground3, marginBottom: "8px" }}>{r.docs}</div>}
+                                                            {ps.length === 0 ? (
+                                                                <Button size="small" appearance="primary" icon={<AddRegular />}
+                                                                    onClick={() => handleAdd(r.path)}>Subscribe</Button>
+                                                            ) : (
+                                                                <>
+                                                                    {ps.map(p => (
+                                                                        <div key={p} style={{ marginBottom: "6px" }}>
+                                                                            <div style={{ fontSize: "12px", fontWeight: 600, color: tokens.colorNeutralForeground2, marginBottom: "3px" }}>
+                                                                                {p}{r.parameters?.[p] ? "" : " *"}
+                                                                            </div>
+                                                                            <Input size="small" style={{ width: "100%" }}
+                                                                                placeholder={r.parameters?.[p] ?? `Enter ${p}`}
+                                                                                value={paramVals[p] ?? ""}
+                                                                                onChange={(_, d) => setParamVals(prev => ({ ...prev, [p]: d.value }))} />
+                                                                        </div>
+                                                                    ))}
+                                                                    <div style={{ fontSize: "11px", color: tokens.colorNeutralForeground4, margin: "6px 0", wordBreak: "break-all" }}>{url}</div>
+                                                                    <Button size="small" appearance="primary" icon={<AddRegular />}
+                                                                        onClick={() => handleAdd(r.path)}>Subscribe</Button>
+                                                                </>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        )
+                    })}
+                </>
+            )}
+
+            {loading && <div style={{ display: "flex", justifyContent: "center", padding: "24px" }}><Spinner size="small" /></div>}
         </>
     )
 }
@@ -357,6 +554,8 @@ const Settings: React.FC = () => {
                 <FeedsTab />
                 <div style={{ ...S.sectionTitle, marginTop: "40px" }}>General</div>
                 <GeneralTab />
+                <div style={{ ...S.sectionTitle, marginTop: "40px" }}>RSSHub</div>
+                <RssHubTab />
                 <div style={{ ...S.sectionTitle, marginTop: "40px" }}>About</div>
                 <AboutTab />
             </div>

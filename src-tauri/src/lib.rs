@@ -7,12 +7,14 @@ use settings::SettingsStore;
 use ai::{ArticleInput, ViewpointsResult};
 use std::sync::Mutex;
 use tauri::Manager;
+use tauri_plugin_notification::NotificationExt;
 use chrono::Utc;
 use std::collections::HashMap;
 
 struct AppState {
     settings: Mutex<SettingsStore>,
     db: Database,
+    rsshub_cache: Mutex<Option<(std::time::Instant, String)>>,
 }
 
 // ─── Date normalization ───
@@ -100,12 +102,8 @@ fn discover_icon(channel: &rss::Channel, feed_url: &str) -> String {
 
 // ─── HTTP conditional fetch ───
 
-fn fetch_feed(url: &str, etag: &str, last_modified: &str) -> Result<(reqwest::blocking::Response, String, String), String> {
-    let mut req = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .user_agent("RustRSSReader/0.1")
-        .build().map_err(|e| e.to_string())?
-        .get(url);
+fn fetch_feed(url: &str, etag: &str, last_modified: &str, proxy: Option<&str>) -> Result<(reqwest::blocking::Response, String, String), String> {
+    let mut req = build_client(proxy, 15)?.get(url);
 
     if !etag.is_empty() { req = req.header("If-None-Match", etag); }
     if !last_modified.is_empty() { req = req.header("If-Modified-Since", last_modified); }
@@ -119,6 +117,27 @@ fn fetch_feed(url: &str, etag: &str, last_modified: &str) -> Result<(reqwest::bl
     }
 
     Ok((resp, new_etag, new_lm))
+}
+
+// ─── HTTP client & proxy ───
+
+fn build_client(proxy: Option<&str>, timeout_secs: u64) -> Result<reqwest::blocking::Client, String> {
+    let mut builder = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .user_agent("RustRSSReader/0.1");
+    if let Some(p) = proxy.filter(|p| !p.is_empty()) {
+        builder = builder.proxy(reqwest::Proxy::all(p).map_err(|e| format!("Invalid proxy URL: {}", e))?);
+    }
+    builder.build().map_err(|e| e.to_string())
+}
+
+fn get_proxy(state: &AppState) -> Option<String> {
+    let s = state.settings.lock().unwrap();
+    if s.get_proxy_enabled() {
+        let addr = s.get_proxy_address();
+        if !addr.is_empty() { return Some(addr); }
+    }
+    None
 }
 
 // ─── Feed commands ───
@@ -148,27 +167,49 @@ fn list_feeds(state: tauri::State<AppState>) -> Result<Vec<FeedRow>, String> {
 
 #[tauri::command]
 fn refresh_feed(state: tauri::State<AppState>, id: i64) -> Result<String, String> {
+    let proxy = get_proxy(&state);
     let feeds = state.db.get_feeds()?;
     let feed = feeds.into_iter().find(|f| f.id == id).ok_or("Feed not found".to_string())?;
-    refresh_feed_internal(&state.db, id, &feed.url, &feed.etag, &feed.last_modified)
+    refresh_feed_internal(&state.db, id, &feed.url, &feed.etag, &feed.last_modified, proxy.as_deref())
+        .map(|(msg, _)| msg)
 }
 
 #[tauri::command]
-fn refresh_all_feeds(state: tauri::State<AppState>) -> Result<String, String> {
+fn refresh_all_feeds(state: tauri::State<AppState>, app: tauri::AppHandle) -> Result<String, String> {
+    let proxy = get_proxy(&state);
     let feeds = state.db.get_feeds()?;
     let mut results = vec![];
+    let mut new_total = 0i64;
+    let mut ok_count = 0usize;
+    let mut err_count = 0usize;
     for feed in feeds {
-        match refresh_feed_internal(&state.db, feed.id, &feed.url, &feed.etag, &feed.last_modified) {
-            Ok(msg) => results.push(format!("{}: {}", feed.title, msg)),
+        match refresh_feed_internal(&state.db, feed.id, &feed.url, &feed.etag, &feed.last_modified, proxy.as_deref()) {
+            Ok((msg, new_count)) => { results.push(format!("{}: {}", feed.title, msg)); new_total += new_count; ok_count += 1; }
             Err(e) if e == "304 Not Modified" => results.push(format!("{}: unchanged", feed.title)),
-            Err(e) => results.push(format!("{}: Error - {}", feed.title, e)),
+            Err(e) => { results.push(format!("{}: Error - {}", feed.title, e)); err_count += 1; }
         }
     }
+
+    // Desktop notification when the batch finishes (toggleable in Settings)
+    let notify_on_refresh = { let s = state.settings.lock().unwrap(); s.get_notify_on_refresh() };
+    if notify_on_refresh && (ok_count > 0 || err_count > 0) {
+        let body = format!("成功 {} 个订阅源，新增 {} 篇文章", ok_count, new_total);
+        let body = if err_count > 0 { format!("{}，失败 {} 个", body, err_count) } else { body };
+        let _ = app.notification().builder().title("订阅刷新完成").body(body).show();
+    }
+
     Ok(results.join("\n"))
 }
 
-fn refresh_feed_internal(db: &Database, id: i64, url: &str, etag: &str, last_modified: &str) -> Result<String, String> {
-    let (resp, new_etag, new_lm) = fetch_feed(url, etag, last_modified)?;
+fn refresh_feed_internal(db: &Database, id: i64, url: &str, etag: &str, last_modified: &str, proxy: Option<&str>) -> Result<(String, i64), String> {
+    let (resp, new_etag, new_lm) = match fetch_feed(url, etag, last_modified, proxy) {
+        Ok(v) => v,
+        Err(e) => {
+            // "unchanged" (304) is not an error; anything else counts as a failure
+            if e != "304 Not Modified" { db.increment_error_count(id)?; }
+            return Err(e);
+        }
+    };
 
     // Read content-type before consuming body
     let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
@@ -185,7 +226,13 @@ fn refresh_feed_internal(db: &Database, id: i64, url: &str, etag: &str, last_mod
         } else { String::from_utf8_lossy(&body_bytes).to_string() }
     } else { String::from_utf8_lossy(&body_bytes).to_string() };
 
-    let channel = rss::Channel::read_from(body_str.as_bytes()).map_err(|e| format!("RSS parse error: {}", e))?;
+    let channel = match rss::Channel::read_from(body_str.as_bytes()) {
+        Ok(c) => c,
+        Err(e) => {
+            db.increment_error_count(id)?;
+            return Err(format!("RSS parse error: {}", e));
+        }
+    };
 
     let feed_title = channel.title().to_string();
     let feed_link = channel.link().to_string();
@@ -209,17 +256,15 @@ fn refresh_feed_internal(db: &Database, id: i64, url: &str, etag: &str, last_mod
         let inserted = db.insert_article(&article)?;
         if inserted > 0 { count += 1; }
     }
-    Ok(format!("{} articles ({} new)", channel.items().len(), count))
+    Ok((format!("{} articles ({} new)", channel.items().len(), count), count))
 }
 
 // ─── RSS Auto-Discovery ───
 
 #[tauri::command]
-fn discover_feeds(_state: tauri::State<AppState>, website_url: String) -> Result<Vec<HashMap<String, String>>, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .user_agent("RustRSSReader/0.1")
-        .build().map_err(|e| e.to_string())?;
+fn discover_feeds(state: tauri::State<AppState>, website_url: String) -> Result<Vec<HashMap<String, String>>, String> {
+    let proxy = get_proxy(&state);
+    let client = build_client(proxy.as_deref(), 10)?;
 
     let resp = client.get(&website_url).send().map_err(|e| format!("HTTP error: {}", e))?;
     let body = resp.text().map_err(|e| e.to_string())?;
@@ -273,6 +318,99 @@ fn discover_feeds(_state: tauri::State<AppState>, website_url: String) -> Result
         return Err("No RSS feeds found on this page".into());
     }
     Ok(found)
+}
+
+// ─── Full-text extraction (Readability) ───
+
+/// Naive removal of `<tag ...>...</tag>` blocks (script/style/noscript/iframe).
+fn strip_blocks(mut html: String) -> String {
+    for tag in ["script", "style", "noscript", "iframe"] {
+        let open = format!("<{}", tag);
+        let end_tag = format!("</{}>", tag);
+        loop {
+            let Some(start) = html.find(&open) else { break };
+            let Some(open_end) = html[start..].find('>') else { break };
+            let content_start = start + open_end + 1;
+            let Some(rel_end) = html[content_start..].find(&end_tag) else { break };
+            let end = content_start + rel_end + end_tag.len();
+            html.replace_range(start..end, "");
+        }
+    }
+    html
+}
+
+#[tauri::command]
+fn fetch_full_text(state: tauri::State<AppState>, article_id: i64, url: String) -> Result<String, String> {
+    let proxy = get_proxy(&state);
+    let client = build_client(proxy.as_deref(), 20)?;
+    let resp = client.get(&url).send().map_err(|e| format!("HTTP error: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {} while fetching the article page", resp.status()));
+    }
+    let html = resp.text().map_err(|e| e.to_string())?;
+    let doc = scraper::Html::parse_document(&html);
+
+    // 1) Prefer <article> or <main>
+    let article_sel = scraper::Selector::parse("article, main").map_err(|e| e.to_string())?;
+    let mut body = doc.select(&article_sel).next().map(|el| el.inner_html());
+
+    // 2) Fallback: the element containing the most text
+    if body.as_deref().map_or(true, |h| h.trim().is_empty()) {
+        let container_sel = scraper::Selector::parse("div, section").map_err(|e| e.to_string())?;
+        let mut best: Option<(String, usize)> = None;
+        for el in doc.select(&container_sel) {
+            let text_len = el.text().collect::<String>().chars().count();
+            if text_len >= 300 && best.as_ref().map_or(true, |(_, n)| text_len > *n) {
+                best = Some((el.inner_html(), text_len));
+            }
+        }
+        body = best.map(|(h, _)| h);
+    }
+
+    let full = strip_blocks(body.unwrap_or_default()).trim().to_string();
+    if full.is_empty() {
+        return Err("Could not extract readable content from the page".into());
+    }
+
+    // Persist so the full text shows next time the article is opened
+    state.db.update_article_content(article_id, &full)?;
+    Ok(full)
+}
+
+// ─── RSSHub routes ───
+
+#[tauri::command]
+fn fetch_rsshub_routes(state: tauri::State<AppState>, instance: String) -> Result<String, String> {
+    let base = instance.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err("RSSHub instance URL is required".into());
+    }
+
+    // 5-minute in-memory cache
+    {
+        let cache = state.rsshub_cache.lock().unwrap();
+        if let Some((t, data)) = &*cache {
+            if t.elapsed() < std::time::Duration::from_secs(300) && !data.is_empty() {
+                return Ok(data.clone());
+            }
+        }
+    }
+
+    let proxy = get_proxy(&state);
+    let client = build_client(proxy.as_deref(), 20)?;
+
+    // Prefer the modern /routes endpoint, fall back to /api/routes
+    let mut resp = client.get(format!("{}/routes", base)).send().map_err(|e| format!("HTTP error: {}", e))?;
+    if !resp.status().is_success() {
+        resp = client.get(format!("{}/api/routes", base)).send().map_err(|e| format!("HTTP error: {}", e))?;
+    }
+    if !resp.status().is_success() {
+        return Err(format!("RSSHub instance responded with HTTP {}", resp.status()));
+    }
+    let text = resp.text().map_err(|e| e.to_string())?;
+
+    *state.rsshub_cache.lock().unwrap() = Some((std::time::Instant::now(), text.clone()));
+    Ok(text)
 }
 
 // ─── Article Export ───
@@ -470,6 +608,7 @@ s_get!(get_fetch_interval, u32, get_fetch_interval); s_set!(set_fetch_interval, 
 s_get!(get_search_engine, u8, get_search_engine); s_set!(set_search_engine, u8, set_search_engine, v);
 s_get!(get_proxy_enabled, bool, get_proxy_enabled); s_set!(set_proxy_enabled, bool, set_proxy_enabled, v);
 s_get!(get_proxy_address, String, get_proxy_address); s_set!(set_proxy_address, String, set_proxy_address, v);
+s_get!(get_notify_on_refresh, bool, get_notify_on_refresh); s_set!(set_notify_on_refresh, bool, set_notify_on_refresh, v);
 s_get!(get_filter_type, u32, get_filter_type); s_set!(set_filter_type, u32, set_filter_type, v);
 s_get!(get_list_view_configs, u8, get_list_view_configs); s_set!(set_list_view_configs, u8, set_list_view_configs, v);
 s_get!(get_nedb_status, bool, get_nedb_status); s_set!(set_nedb_status, bool, set_nedb_status, v);
@@ -489,7 +628,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            app.manage(AppState { settings: Mutex::new(SettingsStore::new()), db: Database::new().map_err(std::io::Error::other)? });
+            app.manage(AppState { settings: Mutex::new(SettingsStore::new()), db: Database::new().map_err(std::io::Error::other)?, rsshub_cache: Mutex::new(None) });
 
             // Show main window after WebView has time to load its content
             let main = app.get_webview_window("main").unwrap();
@@ -503,13 +642,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet, should_use_dark_colors, get_platform, get_version,
             add_feed, remove_feed, update_feed, list_feeds, refresh_feed, refresh_all_feeds,
-            discover_feeds, import_opml, export_opml, export_article,
+            discover_feeds, import_opml, export_opml, export_article, fetch_full_text, fetch_rsshub_routes,
             get_articles, get_article, mark_read, mark_all_read, toggle_star, search_articles,
             add_tag, remove_tag, get_article_tags, get_articles_tags, get_all_tags, get_articles_by_tag,
             get_theme, set_theme, get_menu, set_menu, get_view, set_view, get_locale, set_locale,
             get_font_size, set_font_size, get_font_family, set_font_family,
             get_fetch_interval, set_fetch_interval, get_search_engine, set_search_engine,
             get_proxy_enabled, set_proxy_enabled, get_proxy_address, set_proxy_address,
+            get_notify_on_refresh, set_notify_on_refresh,
             get_filter_type, set_filter_type, get_list_view_configs, set_list_view_configs,
             get_nedb_status, set_nedb_status, get_unread_sources_only, set_unread_sources_only,
             get_source_groups, set_source_groups, get_service_configs, set_service_configs,

@@ -79,6 +79,7 @@ export const feedsBridge = {
     // Discovery & Export
     discoverFeeds: (websiteUrl: string): Promise<Array<{ url: string; title: string; type: string }>> => invoke("discover_feeds", { websiteUrl }),
     exportArticle: (id: number, format: string): Promise<string> => invoke("export_article", { id, format }),
+    fetchFullText: (articleId: number, url: string): Promise<string> => invoke("fetch_full_text", { articleId, url }),
 }
 
 export default feedsBridge

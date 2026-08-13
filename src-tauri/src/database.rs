@@ -139,6 +139,24 @@ impl Database {
         Ok(())
     }
 
+    pub fn increment_error_count(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE feeds SET error_count = error_count + 1 WHERE id = ?1",
+            params![id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn update_article_content(&self, id: i64, content: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE articles SET content = ?1 WHERE id = ?2",
+            params![content, id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     // Articles
 
     pub fn insert_article(&self, article: &NewArticle) -> Result<i64, String> {

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core"
 import { getCurrentWindow, getAllWindows } from "@tauri-apps/api/window"
+import { openUrl } from "@tauri-apps/plugin-opener"
 import { WindowStateListenerType, TouchBarTexts, ImageCallbackTypes } from "../schema-types"
 
 export const utilsBridge = {
@@ -13,7 +14,11 @@ export const utilsBridge = {
     getVersion: (): Promise<string> => invoke("get_version"),
 
     openExternal: (url: string, background = false) => {
-        window.open(url, "_blank")
+        // Open in the system default browser via the Tauri opener plugin.
+        // Falls back to window.open (may open a new WebView window) if the plugin call fails.
+        openUrl(url).catch(() => {
+            window.open(url, "_blank")
+        })
     },
 
     showErrorBox: (title: string, content: string) => {
